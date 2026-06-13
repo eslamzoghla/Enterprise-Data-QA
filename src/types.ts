@@ -1,131 +1,141 @@
 /**
- * Complete Type Definitions for Enterprise QA Engine
+ * Types and interfaces for the Enterprise Excel QA Engine.
  */
 
 export enum ErrorType {
-  // Structural Errors (12 types)
-  MissingSheet = "MissingSheet",
-  ExtraSheet = "ExtraSheet",
-  MissingColumn = "MissingColumn",
-  ExtraColumn = "ExtraColumn",
-  MissingRow = "MissingRow",
-  ExtraRow = "ExtraRow",
-  TableMerge = "TableMerge",
-  TableSplit = "TableSplit",
-  LocalRowMisalignment = "LocalRowMisalignment",
-  LocalColumnMisalignment = "LocalColumnMisalignment",
-  RowShift = "RowShift",
-  ColumnShift = "ColumnShift",
+  // Structural Errors
+  MissingValue = "Missing Value",
+  ExtraValue = "Extra Value",
+  RowShift = "Row Shift",
+  ColumnShift = "Column Shift",
+  MissingRow = "Missing Row",
+  ExtraRow = "Extra Row",
+  MissingColumn = "Missing Column",
+  ExtraColumn = "Extra Column",
+  MissingCell = "Missing Cell",
+  ExtraCell = "Extra Cell",
+  LocalColumnMisalignment = "Local Column Misalignment",
+  LocalRowMisalignment = "Local Row Misalignment",
+  TableMerge = "Table Merge",
+  TableSplit = "Table Split",
 
-  // Cell-Level Errors
-  MissingValue = "MissingValue",
-  ExtraValue = "ExtraValue",
-  MissingCell = "MissingCell",
-  ExtraCell = "ExtraCell",
+  // Numeric Errors
+  MissingDigit = "Missing Digit",
+  ExtraDigit = "Extra Digit",
+  DigitSubstitution = "Digit Substitution",
+  DigitTransposition = "Digit Transposition",
+  NumericDifference = "Numeric Difference", // All remaining numeric mismatches
+  MajorNumericError = "Major Numeric Error", // Override based on variance > 20% or absolute threshold
 
-  // Range Errors (3 types)
-  RangeInversionError = "RangeInversionError",
-  RangeBoundaryError = "RangeBoundaryError",
-  RangeRepresentationError = "RangeRepresentationError",
+  // Text Errors
+  TextTypo = "Text Typo", // Similarity >= 90% after Arabic normalization
+  MajorTextDifference = "Major Text Difference", // Similarity < 90%
+  TextDifference = "Text Difference", // Fallback text mismatch
 
-  // Digit Errors (4 types)
-  MissingDigit = "MissingDigit",
-  ExtraDigit = "ExtraDigit",
-  DigitSubstitution = "DigitSubstitution",
-  DigitTransposition = "DigitTransposition",
-
-  // Numeric Errors (2 types)
-  NumericDifference = "NumericDifference",
-  MajorNumericError = "MajorNumericError",
-
-  // Text Errors (3 types)
-  TextTypo = "TextTypo",
-  MajorTextDifference = "MajorTextDifference",
-  TextDifference = "TextDifference",
-
-  // Header Error
-  HeaderMismatch = "HeaderMismatch"
+  // Sequence / Range Errors
+  RangeInversionError = "Range Inversion Error",
+  RangeBoundaryError = "Range Boundary Error",
+  RangeRepresentationError = "Range Representation Error",
 }
 
 export enum Severity {
   Critical = "Critical",
   High = "High",
   Medium = "Medium",
-  Low = "Low"
+  Low = "Low",
+}
+
+export interface QAConfig {
+  numericMajorVarianceThreshold: number; // e.g., 0.20 for 20%
+  numericMajorAbsoluteThreshold: number; // e.g., 5.0
+  arabicComparisonMode: "STANDARD" | "NONE";
+  minimumShiftCells: number; // e.g., 20
+  shiftDetectionThreshold: number; // e.g., 0.80 for 80%
+  employeeName: string;
+  projectName: string;
+  evaluationDate: string;
+  numericTolerance: number; // e.g., 0.01 for 1%
+  numericToleranceMode: "PERCENTAGE" | "ABSOLUTE";
+  shiftConfidenceScore: boolean;
+  headerPenalty: number; // e.g., 3
+  strictMode: "AUTO" | "ON" | "OFF";
 }
 
 export interface CellValue {
   raw: any;
   formatted: string;
   normalized: string;
-  type: "string" | "number";
+  type: "string" | "number" | "boolean" | "date" | "empty";
 }
 
-export interface SheetData {
+export interface VirtualSegment {
+  originalSheetName: string;
+  virtualStartRow: number;
+  virtualEndRow: number;
+  originalStartRow: number;
+}
+
+export interface SheetGrid {
   name: string;
   maxRow: number;
   maxCol: number;
+  // Map of "row,col" -> CellValue
   cells: Record<string, CellValue>;
+  virtualSegments?: VirtualSegment[];
 }
 
 export interface WorkbookData {
   fileName: string;
-  sheets: Record<string, SheetData>;
-}
-
-export interface QAConfig {
-  numericMajorVarianceThreshold: number;
-  numericMajorAbsoluteThreshold: number;
-  arabicComparisonMode: string;
-  minimumShiftCells: number;
-  shiftDetectionThreshold: number;
-  employeeName: string;
-  projectName: string;
-  evaluationDate: string;
-  numericTolerance: number;
-  numericToleranceMode: string;
-  shiftConfidenceScore: boolean;
-  headerPenalty: number;
-  strictMode: string;
+  sheets: Record<string, SheetGrid>;
 }
 
 export interface ErrorLogEntry {
   sheet: string;
-  cell: string;
+  cell: string; // e.g., "A1" or "C5" (can be zero-indexed row/col indicator, let's use readable coordinate like "B5" or "Row 5, Col B")
   rowIndex: number;
   colIndex: number;
   employeeValue: string;
   reviewerValue: string;
   normalizedEmployeeValue: string;
   normalizedReviewerValue: string;
-  similarity: number;
+  similarity: number; // percentage, or 100 for match, or 0
   errorType: ErrorType;
   severity: Severity;
   penalty: number;
-  suppressed?: boolean;
-  suppressionReason?: string | null;
   notes: string;
 }
 
 export interface ShiftEvent {
-  type: string;
-  sheet: string;
+  sheetName: string;
+  type: "row" | "column";
+  offset: number;
   spanStart: number;
   spanEnd: number;
   detail: string;
   affectedCellsCount: number;
 }
 
-export interface RootCauseData {
-  missingValuesPct: number;
+export interface QAMetrics {
+  comparedCells: number;
+  totalErrors: number;
+  totalPenaltyPoints: number;
+  baseAccuracy: number; // %
+  weightedAccuracy: number; // %
+  errorRatePer10k: number;
+  reviewerWorkloadIndex: number; // correction burden metric
+  finalGrade: string;
+}
+
+export interface RootCauseStats {
   numericErrorsPct: number;
+  missingValuesPct: number;
   textErrorsPct: number;
-  rangeErrorsPct: number;
   shiftErrorsPct: number;
+  rangeErrorsPct: number;
   headerErrorsPct: number;
 }
 
-export interface PatternData {
+export interface PatternFindings {
   repeatedNumericErrors: string[];
   copyPasteErrors: string[];
   errorClusters: string[];
@@ -133,23 +143,13 @@ export interface PatternData {
   shiftEvents: ShiftEvent[];
 }
 
-export interface MetricsData {
-  comparedCells: number;
-  totalErrors: number;
-  baseAccuracy: number;
-  finalGrade: string;
-  totalPenaltyPoints: number;
-  errorRatePer10k: number;
-  reviewerWorkloadIndex: number;
-}
-
 export interface AnalysisResult {
-  metrics: MetricsData;
+  config: QAConfig;
+  metrics: QAMetrics;
+  rootCause: RootCauseStats;
   errorLog: ErrorLogEntry[];
-  rootCause: RootCauseData;
-  patterns: PatternData;
+  patterns: PatternFindings;
   coachingRecommendations: string[];
-  report: any;
-  gridMetrics: any;
-  timestamp: string;
+  summarizedAIReview?: string; // Optional field populated by Gemini server-side route
+  virtualSheets?: Record<string, SheetGrid>;
 }
