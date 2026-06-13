@@ -1,0 +1,6 @@
+{
+  "name": "Enterprise Data QA Engine",
+  "description": "An Enterprise Data Quality Assurance Engine that maps Excel/CSV employee submissions against reviewer ground truth to calculate accuracy, identify row/column shifts, classify errors, output high-fidelity QA evaluation reports, and persistently log outcomes in Google Sheets.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
