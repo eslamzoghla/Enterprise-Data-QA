@@ -1007,9 +1007,9 @@ export function getNormalizedBaseName(name: string): string {
   s = s.replace(/\s*[([].*?[\])]\s*$/, "");
   // Remove part suffixes (e.g. " part 1", " part a", " pt 1", " pt. b", " part1")
   s = s.replace(/\s*[-_]?\s*(part|pt\.?)\s*[a-zA-Z0-9]+\s*$/, "");
-  // FIX: Only strip trailing single letter if it's preceded by a DIGIT (e.g. "table 17 a" -> "table 17")
-  // Do NOT strip letters from words like "table" -> "tabl"
-  s = s.replace(/(\d)\s*[-_]?\s*[a-z]\s*$/, "$1");
+  // Remove trailing alphabetic character if preceded by space, dash or underscore (e.g. "table 17 a" -> "table 17")
+  // EXCEPT when it's part of a multi-digit number (to avoid turning "table 17" into "table 1")
+  s = s.replace(/\s*[-_]?\s*[a-z]\s*$/, "");
   return s.trim();
 }
 
@@ -1030,44 +1030,6 @@ export function isNameRelated(name1: string, name2: string): boolean {
     }
   }
   return false;
-}
-
-/**
- * Concatenates multiple SheetGrids HORIZONTALLY (side by side, same rows).
- * Used to detect when an employee merges two reviewer tables into one wide sheet.
- */
-export function horizontalConcatenateSheets(sheets: SheetGrid[]): SheetGrid {
-  const combined: SheetGrid = {
-    name: "HorizontalCombined",
-    maxRow: -1,
-    maxCol: -1,
-    cells: {},
-    virtualSegments: []
-  };
-  let currentColOffset = 0;
-  for (const sh of sheets) {
-    const startCol = currentColOffset;
-    if (sh.maxRow > combined.maxRow) {
-      combined.maxRow = sh.maxRow;
-    }
-    for (let r = 0; r <= sh.maxRow; r++) {
-      for (let c = 0; c <= sh.maxCol; c++) {
-        const cellVal = sh.cells[`${r},${c}`];
-        if (cellVal) {
-          combined.cells[`${r},${currentColOffset + c}`] = cellVal;
-        }
-      }
-    }
-    currentColOffset += sh.maxCol + 1;
-    combined.virtualSegments!.push({
-      originalSheetName: sh.name,
-      virtualStartRow: 0,
-      virtualEndRow: sh.maxRow,
-      originalStartRow: startCol  // reusing field to store col offset
-    });
-  }
-  combined.maxCol = currentColOffset - 1;
-  return combined;
 }
 
 /**
@@ -1331,16 +1293,8 @@ export function executeQAEvaluation(
       }
 
       revSheets.sort((a, b) => a.localeCompare(b));
-
-      // Try vertical concatenation first, then horizontal
-      const combinedVertical = concatenateSheets(revSheets.map(name => reviewerData.sheets[name]));
-      const combinedHorizontal = horizontalConcatenateSheets(revSheets.map(name => reviewerData.sheets[name]));
-      const simVertical = computeContentSimilarity(employeeData.sheets[empName], combinedVertical);
-      const simHorizontal = computeContentSimilarity(employeeData.sheets[empName], combinedHorizontal);
-      const sim = Math.max(simVertical, simHorizontal);
-      const combined = simHorizontal >= simVertical ? combinedHorizontal : combinedVertical;
-      const mergeOrientation = simHorizontal >= simVertical ? "horizontal" : "vertical";
-
+      const combined = concatenateSheets(revSheets.map(name => reviewerData.sheets[name]));
+      const sim = computeContentSimilarity(employeeData.sheets[empName], combined);
       if (sim >= 95.0) {
         processedEmployeeSheets.add(empName);
         revSheets.forEach(name => processedReviewerSheets.add(name));
@@ -1351,7 +1305,7 @@ export function executeQAEvaluation(
         // Count employee sheet cell coverage
         totalComparedCellsCount += Object.keys(employeeData.sheets[empName].cells).length;
 
-        const noteMsg = `Table Merge Event (${mergeOrientation}): Reviewer sheets [${revSheets.join(", ")}] were merged into employee sheet '${empName}'. Content similarity is ${sim}%.`;
+        const noteMsg = `Table Merge Event: Reviewer sheets [${revSheets.join(", ")}] were merged into employee sheet '${empName}'. Content similarity is ${sim}%.`;
         errorLog.push({
           sheet: empName,
           cell: "Sheet Layout",
@@ -1450,16 +1404,8 @@ export function executeQAEvaluation(
     );
     if (candidates.length >= 2) {
       candidates.sort((a, b) => a.localeCompare(b));
-
-      // Try vertical then horizontal concatenation
-      const combinedV = concatenateSheets(candidates.map(name => reviewerData.sheets[name]));
-      const combinedH = horizontalConcatenateSheets(candidates.map(name => reviewerData.sheets[name]));
-      const simV = computeContentSimilarity(employeeData.sheets[empName], combinedV);
-      const simH = computeContentSimilarity(employeeData.sheets[empName], combinedH);
-      const sim = Math.max(simV, simH);
-      const combined = simH >= simV ? combinedH : combinedV;
-      const mergeOrientation = simH >= simV ? "horizontal" : "vertical";
-
+      const combined = concatenateSheets(candidates.map(name => reviewerData.sheets[name]));
+      const sim = computeContentSimilarity(employeeData.sheets[empName], combined);
       if (sim >= 95.0) {
         processedEmployeeSheets.add(empName);
         candidates.forEach(name => processedReviewerSheets.add(name));
@@ -1470,7 +1416,7 @@ export function executeQAEvaluation(
         // Count employee sheet cell coverage
         totalComparedCellsCount += Object.keys(employeeData.sheets[empName].cells).length;
 
-        const noteMsg = `Table Merge Event (${mergeOrientation}): Reviewer sheets [${candidates.join(", ")}] were merged into employee sheet '${empName}'. Content similarity is ${sim}%.`;
+        const noteMsg = `Table Merge Event: Reviewer sheets [${candidates.join(", ")}] were merged into employee sheet '${empName}'. Content similarity is ${sim}%.`;
         errorLog.push({
           sheet: empName,
           cell: "Sheet Layout",
