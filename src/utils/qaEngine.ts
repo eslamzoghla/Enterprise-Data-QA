@@ -15,7 +15,9 @@ import {
   RootCauseStats,
   PatternFindings,
   QAConfig,
-  AnalysisResult
+  AnalysisResult,
+  SheetMatch,
+  RootCauseCluster
 } from "../types.ts";
 
 /**
@@ -27,6 +29,18 @@ export function normalizeTextSpaces(text: string): string {
     .replace(/\r?\n/g, " ") // Normalize line breaks to a space
     .replace(/\s+/g, " ")   // Replace multiple spaces with a single space
     .trim();                // Trim leading/trailing whitespace
+}
+
+/**
+ * Converts Arabic numerals (٠١٢٣٤٥٦٧٨٩) to standard Eastern-Arabic/Latin digits (0123456789).
+ */
+export function convertArabicDigits(str: string): string {
+  if (!str) return "";
+  const arabicDigitsMap: Record<string, string> = {
+    "٠": "0", "١": "1", "٢": "2", "٣": "3", "٤": "4",
+    "٥": "5", "٦": "6", "٧": "7", "٨": "8", "٩": "9"
+  };
+  return str.replace(/[٠١٢٣٤٥٦٧٨٩]/g, (char) => arabicDigitsMap[char] || char);
 }
 
 /**
@@ -54,8 +68,8 @@ export function normalizeArabicText(text: string): string {
   // Convert Ya with Hamza (ئ) -> Ya (ي)
   norm = norm.replace(/ئ/g, "ي");
 
-  // Replace Te Marbuta (ة) with Heh (ه) to simplify spelling checks
-  norm = norm.replace(/ة/g, "ه");
+  // NOTE: Te Marbuta (ة) conversion to Heh (ه) is strictly disabled in compliance with the specification
+  // as it changes word meanings and results in incorrect fuzzy matching.
 
   return norm;
 }
@@ -67,7 +81,9 @@ export function normalizeNumericString(val: string | number): { isNumeric: boole
   if (typeof val === "number") {
     return { isNumeric: true, value: val, cleanedStr: String(val) };
   }
-  const trimmed = val.trim();
+  let trimmed = val.trim();
+  // Normalize Arabic digits to Latin numerals first
+  trimmed = convertArabicDigits(trimmed);
   if (!trimmed) {
     return { isNumeric: false, value: null, cleanedStr: "" };
   }
@@ -85,30 +101,72 @@ export function normalizeNumericString(val: string | number): { isNumeric: boole
 }
 
 /**
- * Standardizes common Date representations into YYYY-MM-DD
+ * Safely parses a string into a normalized ISO date YYYY-MM-DD without Date.parse to maintain browser consistency.
+ * Supports formats: YYYY-MM-DD, DD/MM/YYYY, MM/DD/YYYY, and dots/spaces separation.
  */
-export function normalizeDate(val: string): { isDate: boolean; formatted: string } {
-  const cleaned = val.trim();
-  const timestamp = Date.parse(cleaned);
-  if (!isNaN(timestamp)) {
-    const d = new Date(timestamp);
-    const year = d.getFullYear();
-    const month = String(d.getMonth() + 1).padStart(2, "0");
-    const day = String(d.getDate()).padStart(2, "0");
-    
-    // Dates usually have delimiters like /, -, or spaces, prevent raw large numbers being false dates
-    if (cleaned.includes("/") || cleaned.includes("-") || cleaned.includes(",")) {
-      return { isDate: true, formatted: `${year}-${month}-${day}` };
+export function parseDateDeterministic(val: string): { isDate: boolean; formatted: string } {
+  const cleaned = convertArabicDigits(val.trim());
+  if (!cleaned) return { isDate: false, formatted: "" };
+
+  // 1. Match YYYY-MM-DD pattern (or with slash, dot, space delimiters)
+  const ymdRegex = /^(\d{4})[\/\.\-\s](\d{1,2})[\/\.\-\s](\d{1,2})$/;
+  let match = cleaned.match(ymdRegex);
+  if (match) {
+    const year = parseInt(match[1]);
+    const month = parseInt(match[2]);
+    const day = parseInt(match[3]);
+    if (month >= 1 && month <= 12 && day >= 1 && day <= 31) {
+      const formatted = `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+      return { isDate: true, formatted };
     }
   }
+
+  // 2. Match DD/MM/YYYY or MM/DD/YYYY patterns with 4-digit years
+  const dmyRegex = /^(\d{1,2})[\/\.\-\s](\d{1,2})[\/\.\-\s](\d{4})$/;
+  match = cleaned.match(dmyRegex);
+  if (match) {
+    const p1 = parseInt(match[1]);
+    const p2 = parseInt(match[2]);
+    const year = parseInt(match[3]);
+
+    let day = p1;
+    let month = p2;
+
+    if (p1 > 12) {
+      // Must be DD/MM/YYYY since month cannot exceed 12
+      day = p1;
+      month = p2;
+    } else if (p2 > 12) {
+      // Must be MM/DD/YYYY since day exceeds 12
+      day = p2;
+      month = p1;
+    } else {
+      // Ambiguous case (both <= 12). Default to DD/MM/YYYY as standard behavior
+      day = p1;
+      month = p2;
+    }
+
+    if (month >= 1 && month <= 12 && day >= 1 && day <= 31) {
+      const formatted = `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+      return { isDate: true, formatted };
+    }
+  }
+
   return { isDate: false, formatted: cleaned };
 }
 
 /**
- * Standardizes time strings (e.g. 14:30:00 vs 14:30)
+ * Standardizes common Date representations into YYYY-MM-DD
+ */
+export function normalizeDate(val: string): { isDate: boolean; formatted: string } {
+  return parseDateDeterministic(val);
+}
+
+/**
+ * Standardizes time strings (e.g. 14:30:00 vs 14:30) with Eastern-Arabic digit conversion
  */
 export function normalizeTime(val: string): { isTime: boolean; formatted: string } {
-  const cleaned = val.trim();
+  const cleaned = convertArabicDigits(val.trim());
   const timeRegex = /^([0-1]?[0-9]|2[0-3]):([0-5][0-9])(:([0-5][0-9]))?\s*(AM|PM)?$/i;
   if (timeRegex.test(cleaned)) {
     return { isTime: true, formatted: cleaned.toLowerCase() };
@@ -116,10 +174,28 @@ export function normalizeTime(val: string): { isTime: boolean; formatted: string
   return { isTime: false, formatted: cleaned };
 }
 
+const levenshteinCache = new Map<string, number>();
+
 /**
- * Computes Levenshtein Distance between s1 and s2
+ * Computes Levenshtein Distance between s1 and s2 with memoization and length-difference early exit
  */
 export function levenshteinDistance(s1: string, s2: string): number {
+  const cacheKey = s1 + "|||" + s2;
+  if (levenshteinCache.has(cacheKey)) {
+    return levenshteinCache.get(cacheKey)!;
+  }
+  const revCacheKey = s2 + "|||" + s1;
+  if (levenshteinCache.has(revCacheKey)) {
+    return levenshteinCache.get(revCacheKey)!;
+  }
+
+  // Early-exit for highly dissimilar lengths to optimize performance
+  if (Math.abs(s1.length - s2.length) > 10) {
+    const minPossibleDistance = Math.abs(s1.length - s2.length);
+    levenshteinCache.set(cacheKey, minPossibleDistance);
+    return minPossibleDistance;
+  }
+
   if (s1.length === 0) return s2.length;
   if (s2.length === 0) return s1.length;
 
@@ -141,7 +217,9 @@ export function levenshteinDistance(s1: string, s2: string): number {
       }
     }
   }
-  return matrix[s2.length][s1.length];
+  const result = matrix[s2.length][s1.length];
+  levenshteinCache.set(cacheKey, result);
+  return result;
 }
 
 /**
@@ -152,6 +230,94 @@ export function calculateTextSimilarity(s1: string, s2: string): number {
   if (maxLength === 0) return 100;
   const distance = levenshteinDistance(s1, s2);
   return parseFloat(((1 - distance / maxLength) * 100).toFixed(2));
+}
+
+/**
+ * Computes a robust match confidence score (0 to 100) based on name similarity, headers, structure, and content.
+ */
+export function computeMatchConfidence(
+  reviewerSheet: SheetGrid,
+  employeeSheet: SheetGrid
+): {
+  confidence: number;
+  factors: {
+    nameSimilarity: number;
+    headerSimilarity: number;
+    structuralSimilarity: number;
+    dataOverlap: number;
+  }
+} {
+  // 1. Name Similarity
+  const name1 = reviewerSheet.name;
+  const name2 = employeeSheet.name;
+  const nameSim = calculateTextSimilarity(name1, name2);
+
+  // 2. Header Similarity
+  const headers1Set = detectHeaderRows(reviewerSheet);
+  const headers2Set = detectHeaderRows(employeeSheet);
+  
+  const h1Vals: string[] = [];
+  headers1Set.forEach(row => {
+    for (let c = 0; c <= reviewerSheet.maxCol; c++) {
+      const cell = reviewerSheet.cells[`${row},${c}`];
+      if (cell && cell.normalized) {
+        h1Vals.push(cell.normalized.trim().toLowerCase());
+      }
+    }
+  });
+
+  const h2Vals: string[] = [];
+  headers2Set.forEach(row => {
+    for (let c = 0; c <= employeeSheet.maxCol; c++) {
+      const cell = employeeSheet.cells[`${row},${c}`];
+      if (cell && cell.normalized) {
+        h2Vals.push(cell.normalized.trim().toLowerCase());
+      }
+    }
+  });
+
+  let headerSim = 0;
+  if (h1Vals.length === 0 && h2Vals.length === 0) {
+    headerSim = 100.0;
+  } else if (h1Vals.length === 0 || h2Vals.length === 0) {
+    headerSim = 20.0;
+  } else {
+    const s1 = new Set(h1Vals);
+    const s2 = new Set(h2Vals);
+    let common = 0;
+    s1.forEach(v => {
+      if (s2.has(v)) common++;
+    });
+    headerSim = (common / Math.max(s1.size, s2.size)) * 100;
+  }
+
+  // 3. Structural Similarity (diff of row/col bounds)
+  const rDiff = Math.abs(reviewerSheet.maxRow - employeeSheet.maxRow);
+  const cDiff = Math.abs(reviewerSheet.maxCol - employeeSheet.maxCol);
+  const rMax = Math.max(reviewerSheet.maxRow, employeeSheet.maxRow, 1);
+  const cMax = Math.max(reviewerSheet.maxCol, employeeSheet.maxCol, 1);
+  const structSim = Math.max(0, 100 * (1 - (rDiff / rMax) * 0.5 - (cDiff / cMax) * 0.5));
+
+  // 4. Data Content Overlap
+  const dataOverlap = computeContentSimilarity(reviewerSheet, employeeSheet);
+
+  // Weighted Combination: 20% name, 20% header, 20% struct, 40% content
+  const confidence = parseFloat((
+    (nameSim * 0.20) +
+    (headerSim * 0.20) +
+    (structSim * 0.20) +
+    (dataOverlap * 0.40)
+  ).toFixed(1));
+
+  return {
+    confidence: Math.max(0, Math.min(100, confidence)),
+    factors: {
+      nameSimilarity: parseFloat(nameSim.toFixed(1)),
+      headerSimilarity: parseFloat(headerSim.toFixed(1)),
+      structuralSimilarity: parseFloat(structSim.toFixed(1)),
+      dataOverlap: parseFloat(dataOverlap.toFixed(1))
+    }
+  };
 }
 
 /**
@@ -176,6 +342,16 @@ export function getNormalizedValue(raw: any, config: QAConfig): CellValue {
     };
   }
 
+  const timeNorm = normalizeTime(spacedNorm);
+  if (timeNorm.isTime) {
+    return {
+      raw,
+      formatted: spacedNorm,
+      normalized: timeNorm.formatted,
+      type: "time"
+    };
+  }
+
   // Check DateTime
   const dateNorm = normalizeDate(spacedNorm);
   if (dateNorm.isDate) {
@@ -183,16 +359,6 @@ export function getNormalizedValue(raw: any, config: QAConfig): CellValue {
       raw,
       formatted: spacedNorm,
       normalized: dateNorm.formatted,
-      type: "date"
-    };
-  }
-
-  const timeNorm = normalizeTime(spacedNorm);
-  if (timeNorm.isTime) {
-    return {
-      raw,
-      formatted: spacedNorm,
-      normalized: timeNorm.formatted,
       type: "date"
     };
   }
@@ -217,8 +383,59 @@ export function getNormalizedValue(raw: any, config: QAConfig): CellValue {
 /**
  * Auto-detect sheets exclusions
  */
-export function shouldExcludeSheet(sheetName: string, maxRow: number, cellsCount: number): boolean {
-  // Do not automatically exclude sheets by name keyword or low row counts. Evaluate everything that is loaded.
+export function shouldExcludeSheet(
+  sheetName: string, 
+  maxRow: number, 
+  cellsCount: number,
+  autoIgnoreEnabled?: boolean,
+  customIgnorePatterns?: string
+): boolean {
+  if (!autoIgnoreEnabled || !customIgnorePatterns) {
+    return false;
+  }
+
+  const normalizedPatterns = customIgnorePatterns
+    .split(",")
+    .map(p => p.trim())
+    .filter(p => p.length > 0);
+
+  for (const pat of normalizedPatterns) {
+    // Check if it's a regex-style string wrapped in slashes
+    if (pat.startsWith("/") && pat.endsWith("/")) {
+      try {
+        const regexStr = pat.slice(1, -1);
+        const regex = new RegExp(regexStr, "i");
+        if (regex.test(sheetName)) {
+          return true;
+        }
+      } catch (err) {
+        // Fallback
+      }
+    }
+
+    // Support standard regex symbols without explicit slashes
+    if (pat.includes("*") || pat.includes("?") || pat.includes("^") || pat.includes("$")) {
+      try {
+        const regex = new RegExp(pat, "i");
+        if (regex.test(sheetName)) {
+          return true;
+        }
+      } catch (err) {
+        // Fallback
+      }
+    }
+
+    // Exact case-insensitive match
+    if (sheetName.toLowerCase() === pat.toLowerCase()) {
+      return true;
+    }
+
+    // Substring match
+    if (sheetName.toLowerCase().includes(pat.toLowerCase())) {
+      return true;
+    }
+  }
+
   return false;
 }
 
@@ -229,28 +446,111 @@ export function detectHeaderRows(sheet: SheetGrid): Set<number> {
   const headers = new Set<number>();
   if (sheet.maxRow < 0) return headers;
 
-  const maxInspect = Math.min(4, sheet.maxRow);
+  const rowScores: { row: number; score: number; nonEmpty: number }[] = [];
+  const maxInspect = Math.min(10, sheet.maxRow); // Inspect up to top 10 rows
+
   for (let r = 0; r <= maxInspect; r++) {
     let stringCount = 0;
+    let numberCount = 0;
+    let emptyCount = 0;
     let totalCount = 0;
+    const values: string[] = [];
 
     for (let c = 0; c <= sheet.maxCol; c++) {
       const cell = sheet.cells[`${r},${c}`];
-      if (cell) {
-        totalCount++;
+      totalCount++;
+      if (!cell || cell.type === "empty" || !cell.normalized.trim()) {
+        emptyCount++;
+      } else {
+        values.push(cell.normalized.trim());
         if (cell.type === "string") {
           stringCount++;
+        } else if (cell.type === "number") {
+          numberCount++;
         }
       }
     }
 
-    // Default row 0 is header. For rows 1-4, if dominantly string context, consider as sub-header.
-    if (r === 0) {
-      headers.add(r);
-    } else if (totalCount > 0 && stringCount / totalCount >= 0.6) {
-      headers.add(r);
+    const nonEmptyCount = values.length;
+    if (nonEmptyCount <= 1) {
+      // Either blank row (0 cells) or title row (1 cell), highly unlikely to be the main table header
+      rowScores.push({ row: r, score: -100, nonEmpty: nonEmptyCount });
+      continue;
+    }
+
+    // 1. Uniqueness score (0.0 to 1.0)
+    const uniqueVals = new Set(values);
+    const uniqueness = uniqueVals.size / nonEmptyCount;
+
+    // 2. Text percentage (0.0 to 1.0)
+    const textPct = stringCount / nonEmptyCount;
+
+    // 3. Density / Column fill
+    const fillRate = nonEmptyCount / totalCount;
+
+    // Calculate a base score
+    let score = 0;
+    score += textPct * 40;       // Up to 40 points for being text-dominant
+    score += uniqueness * 30;    // Up to 30 points for having unique values
+    score += fillRate * 20;      // Up to 20 points for being fully populated
+
+    // Penalty for numbers
+    const numberPct = numberCount / nonEmptyCount;
+    score -= numberPct * 40;     // Huge penalty if it contains mostly numbers (typical data rows)
+
+    // 4. Check neighborhood signal: style/uniqueness contrast with the next row (r+1)
+    if (r < sheet.maxRow) {
+      let nextRowStringCount = 0;
+      let nextRowNumberCount = 0;
+      let nextRowNonEmpty = 0;
+      for (let c = 0; c <= sheet.maxCol; c++) {
+        const nextCell = sheet.cells[`${r+1},${c}`];
+        if (nextCell && nextCell.type !== "empty" && nextCell.normalized.trim()) {
+          nextRowNonEmpty++;
+          if (nextCell.type === "string") {
+            nextRowStringCount++;
+          } else if (nextCell.type === "number") {
+            nextRowNumberCount++;
+          }
+        }
+      }
+      if (nextRowNonEmpty > 0) {
+        const nextRowNumberPct = nextRowNumberCount / nextRowNonEmpty;
+        // If the row below is full of numbers, then this row r has a higher chance of being the header
+        score += nextRowNumberPct * 20;
+      }
+    }
+
+    rowScores.push({ row: r, score, nonEmpty: nonEmptyCount });
+  }
+
+  // Find the row with the maximum score
+  let bestRow = 0;
+  let maxScore = -999;
+  for (const item of rowScores) {
+    if (item.score > maxScore && item.nonEmpty > 1) {
+      maxScore = item.score;
+      bestRow = item.row;
     }
   }
+
+  // If we found a clear header row, put it in the headers Set
+  if (maxScore > 0) {
+    headers.add(bestRow);
+    
+    // Check if there are immediately following rows that are ALSO headers (sub-headers)
+    // They must have predominantly text cells and decent uniqueness
+    for (let r = bestRow + 1; r <= Math.min(bestRow + 2, sheet.maxRow); r++) {
+      const scoreObj = rowScores.find(item => item.row === r);
+      if (scoreObj && scoreObj.score > 25) {
+        headers.add(r);
+      }
+    }
+  } else {
+    // Fallback: row 0 is header
+    headers.add(0);
+  }
+
   return headers;
 }
 
@@ -303,15 +603,28 @@ interface RangeParse {
 }
 
 export function parseRangeOrSequence(val: string): RangeParse {
-  const cleaned = val.trim();
-  // Support delimiters: slash, dash, en-dash, em-dash
-  const regex = /^([a-zA-Z0-9]+)([\/\-–—])([a-zA-Z0-9]+)$/;
-  const match = cleaned.match(regex);
+  const normalizedText = convertArabicDigits(val.trim());
+  // Unicode regex with /u flag allowing letters (\p{L}) and numbers (\p{N}) across all language blocks
+  const regex = /^([\p{L}\p{N}]+)([\/\-–—])([\p{L}\p{N}]+)$/u;
+  const match = normalizedText.match(regex);
   if (match) {
+    let left = match[1];
+    let right = match[3];
+
+    // Normalize Arabic letters if present (e.g. أ1 -> ا1) for consistent boundaries
+    const leftHasArabic = /[\u0600-\u06FF]/.test(left);
+    if (leftHasArabic) {
+      left = normalizeArabicText(left);
+    }
+    const rightHasArabic = /[\u0600-\u06FF]/.test(right);
+    if (rightHasArabic) {
+      right = normalizeArabicText(right);
+    }
+
     return {
       isValid: true,
-      left: match[1],
-      right: match[3],
+      left,
+      right,
       delimiter: match[2]
     };
   }
@@ -429,6 +742,21 @@ export function getColLetter(colIndex: number): string {
 /**
  * Executes high fidelity Column Shift Detection on grids with confidence level
  */
+/**
+ * Creates an efficient 2D array representation of sheet cells for fast lookup.
+ */
+export function getSheetCellsMatrix(sheet: SheetGrid): (CellValue | undefined)[][] {
+  const matrix: (CellValue | undefined)[][] = [];
+  for (let r = 0; r <= sheet.maxRow; r++) {
+    const rowList: (CellValue | undefined)[] = [];
+    for (let c = 0; c <= sheet.maxCol; c++) {
+      rowList.push(sheet.cells[`${r},${c}`]);
+    }
+    matrix.push(rowList);
+  }
+  return matrix;
+}
+
 export function detectShifts(
   empGrid: SheetGrid,
   revGrid: SheetGrid,
@@ -446,18 +774,27 @@ export function detectShifts(
   const minShiftCells = config.minimumShiftCells;
   const shiftThreshold = config.shiftDetectionThreshold;
 
-  // Search standard offsets from -3 to +3, excluding 0
-  const offsets = [-3, -2, -1, 1, 2, 3];
+  // Access via cached 2D matrix to prevent string key memory leak and performance bottleneck
+  const empMatrix = getSheetCellsMatrix(empGrid);
+  const revMatrix = getSheetCellsMatrix(revGrid);
 
-  const getNorm = (grid: SheetGrid, r: number, c: number) => {
-    return grid.cells[`${r},${c}`]?.normalized || "";
+  const getNorm = (matrix: (CellValue | undefined)[][], r: number, c: number) => {
+    return matrix[r]?.[c]?.normalized || "";
   };
 
-  const getCellType = (grid: SheetGrid, r: number, c: number) => {
-    return grid.cells[`${r},${c}`]?.type || "empty";
+  const getCellType = (matrix: (CellValue | undefined)[][], r: number, c: number) => {
+    return matrix[r]?.[c]?.type || "empty";
   };
 
-  // --- 2. Detect Column Shift ---
+  // --- Dynamic Column Shift Offset Range up to 20 (Requirement 4) ---
+  const offsets: number[] = [];
+  const maxColOffset = Math.min(20, maxCol);
+  for (let i = 1; i <= maxColOffset; i++) {
+    offsets.push(i);
+    offsets.push(-i);
+  }
+
+  // Detect Column Shifts
   for (const dc of offsets) {
     let contiguousCols: number[] = [];
 
@@ -466,11 +803,11 @@ export function detectShifts(
       let compared = 0;
 
       for (let r = 0; r <= maxRow; r++) {
-        const empVal = getNorm(empGrid, r, c);
-        const revVal = getNorm(revGrid, r, c + dc);
+        const empVal = getNorm(empMatrix, r, c);
+        const revVal = getNorm(revMatrix, r, c + dc);
 
-        const empType = getCellType(empGrid, r, c);
-        const revType = getCellType(revGrid, r, c + dc);
+        const empType = getCellType(empMatrix, r, c);
+        const revType = getCellType(revMatrix, r, c + dc);
 
         if (empType !== "empty" || revType !== "empty") {
           compared++;
@@ -498,9 +835,9 @@ export function detectShifts(
       let matchesCount = 0;
       for (const c of cols) {
         for (let r = 0; r <= maxRow; r++) {
-          if (getCellType(empGrid, r, c) !== "empty" || getCellType(revGrid, r, c + offset_c) !== "empty") {
+          if (getCellType(empMatrix, r, c) !== "empty" || getCellType(revMatrix, r, c + offset_c) !== "empty") {
             totalSegmentCells++;
-            if (getNorm(empGrid, r, c) === getNorm(revGrid, r, c + offset_c)) {
+            if (getNorm(empMatrix, r, c) === getNorm(revMatrix, r, c + offset_c)) {
               matchesCount++;
             }
           }
@@ -529,6 +866,89 @@ export function detectShifts(
         for (const c of cols) {
           for (let r = 0; r <= maxRow; r++) {
             shiftedCoords[`${r},${c}`] = "column";
+          }
+        }
+      }
+    }
+  }
+
+  // --- Dynamic Row Shift Offset Range up to 20 (Requirement 5) ---
+  const rowOffsets: number[] = [];
+  const maxRowOffset = Math.min(20, maxRow);
+  for (let i = 1; i <= maxRowOffset; i++) {
+    rowOffsets.push(i);
+    rowOffsets.push(-i);
+  }
+
+  // Detect Row Shifts
+  for (const dr of rowOffsets) {
+    let contiguousRows: number[] = [];
+
+    for (let r = 0; r <= maxRow; r++) {
+      let matches = 0;
+      let compared = 0;
+
+      for (let c = 0; c <= maxCol; c++) {
+        const empVal = getNorm(empMatrix, r, c);
+        const revVal = getNorm(revMatrix, r + dr, c);
+
+        const empType = getCellType(empMatrix, r, c);
+        const revType = getCellType(revMatrix, r + dr, c);
+
+        if (empType !== "empty" || revType !== "empty") {
+          compared++;
+          if (empVal === revVal) {
+            matches++;
+          }
+        }
+      }
+
+      if (compared > 0 && matches / compared >= shiftThreshold) {
+        contiguousRows.push(r);
+      } else {
+        if (contiguousRows.length > 0) {
+          evaluateRowGroup(contiguousRows, dr);
+          contiguousRows = [];
+        }
+      }
+    }
+    if (contiguousRows.length > 0) {
+      evaluateRowGroup(contiguousRows, dr);
+    }
+
+    function evaluateRowGroup(rows: number[], offset_r: number) {
+      let totalSegmentCells = 0;
+      let matchesCount = 0;
+      for (const r of rows) {
+        for (let c = 0; c <= maxCol; c++) {
+          if (getCellType(empMatrix, r, c) !== "empty" || getCellType(revMatrix, r + offset_r, c) !== "empty") {
+            totalSegmentCells++;
+            if (getNorm(empMatrix, r, c) === getNorm(revMatrix, r + offset_r, c)) {
+              matchesCount++;
+            }
+          }
+        }
+      }
+
+      if (totalSegmentCells >= minShiftCells) {
+        const start = rows[0];
+        const end = rows[rows.length - 1];
+
+        const confidenceScore = totalSegmentCells > 0 ? Math.round((matchesCount / totalSegmentCells) * 100) : 100;
+
+        events.push({
+          sheetName: empGrid.name,
+          type: "row",
+          offset: offset_r,
+          spanStart: start,
+          spanEnd: end,
+          detail: `Row Alignment Shift: Rows ${start + 1} to ${end + 1} shifted vertically by ${offset_r} space(s) [Confidence: ${confidenceScore}%, cells affected: ${totalSegmentCells}]`,
+          affectedCellsCount: totalSegmentCells
+        });
+
+        for (const r of rows) {
+          for (let c = 0; c <= maxCol; c++) {
+            shiftedCoords[`${r},${c}`] = "row";
           }
         }
       }
@@ -1217,7 +1637,13 @@ export function executeQAEvaluation(
     const revSheet = reviewerData.sheets[sheetName];
     const activeSheet = empSheet || revSheet;
     if (!activeSheet) return false;
-    return !shouldExcludeSheet(sheetName, activeSheet.maxRow, Object.keys(activeSheet.cells).length);
+    return !shouldExcludeSheet(
+      sheetName, 
+      activeSheet.maxRow, 
+      Object.keys(activeSheet.cells).length,
+      config.autoIgnoreEnabled,
+      config.customIgnorePatterns
+    );
   });
 
   // Track merged/split processed sheets so we can suppress baseline omissions errors
@@ -1237,13 +1663,25 @@ export function executeQAEvaluation(
   // Extract missing sheets candidates
   const missingReviewerSheets = Object.keys(reviewerData.sheets).filter(name => {
     const sheet = reviewerData.sheets[name];
-    if (shouldExcludeSheet(name, sheet.maxRow, Object.keys(sheet.cells).length)) return false;
+    if (shouldExcludeSheet(
+      name, 
+      sheet.maxRow, 
+      Object.keys(sheet.cells).length,
+      config.autoIgnoreEnabled,
+      config.customIgnorePatterns
+    )) return false;
     return !employeeData.sheets[name];
   });
 
   const extraEmployeeSheets = Object.keys(employeeData.sheets).filter(name => {
     const sheet = employeeData.sheets[name];
-    if (shouldExcludeSheet(name, sheet.maxRow, Object.keys(sheet.cells).length)) return false;
+    if (shouldExcludeSheet(
+      name, 
+      sheet.maxRow, 
+      Object.keys(sheet.cells).length,
+      config.autoIgnoreEnabled,
+      config.customIgnorePatterns
+    )) return false;
     return !reviewerData.sheets[name];
   });
 
@@ -1251,7 +1689,13 @@ export function executeQAEvaluation(
   const empGroups: Record<string, string[]> = {};
   for (const name of Object.keys(employeeData.sheets)) {
     const sheet = employeeData.sheets[name];
-    if (shouldExcludeSheet(name, sheet.maxRow, Object.keys(sheet.cells).length)) continue;
+    if (shouldExcludeSheet(
+      name, 
+      sheet.maxRow, 
+      Object.keys(sheet.cells).length,
+      config.autoIgnoreEnabled,
+      config.customIgnorePatterns
+    )) continue;
     const base = getNormalizedBaseName(name);
     if (!empGroups[base]) empGroups[base] = [];
     empGroups[base].push(name);
@@ -1261,7 +1705,13 @@ export function executeQAEvaluation(
   const revGroups: Record<string, string[]> = {};
   for (const name of Object.keys(reviewerData.sheets)) {
     const sheet = reviewerData.sheets[name];
-    if (shouldExcludeSheet(name, sheet.maxRow, Object.keys(sheet.cells).length)) continue;
+    if (shouldExcludeSheet(
+      name, 
+      sheet.maxRow, 
+      Object.keys(sheet.cells).length,
+      config.autoIgnoreEnabled,
+      config.customIgnorePatterns
+    )) continue;
     const base = getNormalizedBaseName(name);
     if (!revGroups[base]) revGroups[base] = [];
     revGroups[base].push(name);
@@ -1546,6 +1996,12 @@ export function executeQAEvaluation(
 
     // Missing sheet or extra sheet triggers full coordinate missing/extra values
     if (!empSheet || !revSheet) {
+      // REQUIREMENT 5: Structural suppression guarantee
+      const isRelatedToSplitOrMerge = processedReviewerSheets.has(sheetName) || processedEmployeeSheets.has(sheetName);
+      if (isRelatedToSplitOrMerge) {
+        continue;
+      }
+
       const isEmployeeOnly = !!empSheet;
       const penalty = isEmployeeOnly ? config.extraTableCoefficient : config.missingTableCoefficient;
       const errType = isEmployeeOnly ? ErrorType.ExtraTable : ErrorType.MissingTable;
@@ -2698,7 +3154,12 @@ export function executeQAEvaluation(
     missingRowsCount,
     numericDifferencesCount,
     textDifferencesCount,
-    emptyCellDifferencesCount
+    emptyCellDifferencesCount,
+
+    // Add compatibility properties of metrics to resolve dashboard errors
+    accuracyRatio: baseAccuracy,
+    totalStructuralPenalty: totalPenalty,
+    grade: finalGrade
   };
 
   // Compile standard Root Cause percentages partition
@@ -2785,6 +3246,128 @@ export function executeQAEvaluation(
     );
   }
 
+  // REQUIREMENT 1 & 2: Compile mapping and confidence scores
+  const sheetMatchesFromRun: SheetMatch[] = [];
+
+  for (const revName of Object.keys(reviewerData.sheets)) {
+    const revSheet = reviewerData.sheets[revName];
+    if (shouldExcludeSheet(
+      revName, 
+      revSheet.maxRow, 
+      Object.keys(revSheet.cells).length,
+      config.autoIgnoreEnabled,
+      config.customIgnorePatterns
+    )) {
+      continue;
+    }
+
+    // 1. Table Split
+    // Check if was processed as a TABLE SPLIT:
+    const revBase = getNormalizedBaseName(revName);
+    const relatedEmps = empGroups[revBase] || [];
+    const splitMatch = comparisonPairs.find(p => p.sheetName === revName && p.comparisonType === "split");
+    if (splitMatch && relatedEmps.length >= 2) {
+      const combEmp = splitMatch.empSheet!;
+      const confData = computeMatchConfidence(revSheet, combEmp);
+      sheetMatchesFromRun.push({
+        reviewerSheetName: revName,
+        matchedEmployeeSheets: relatedEmps,
+        matchType: "Split Match",
+        matchConfidence: confData.confidence,
+        factors: confData.factors
+      });
+      continue;
+    }
+
+    // 2. Table Merge
+    const mergeMatch = comparisonPairs.find(p => p.comparisonType === "merge" && p.revSheet && Object.keys(employeeData.sheets).some(empKey => {
+      const empS = employeeData.sheets[empKey];
+      if (!empS) return false;
+      const rGroupsList = revGroups[getNormalizedBaseName(empKey)] || [];
+      return rGroupsList.includes(revName);
+    }));
+
+    if (mergeMatch) {
+      const empName = mergeMatch.sheetName;
+      const empSheet = employeeData.sheets[empName];
+      const confData = computeMatchConfidence(revSheet, empSheet);
+      sheetMatchesFromRun.push({
+        reviewerSheetName: revName,
+        matchedEmployeeSheets: [empName],
+        matchType: "Merge Match",
+        matchConfidence: confData.confidence,
+        factors: confData.factors
+      });
+      continue;
+    }
+
+    // 3. Direct / Fuzzy standard match
+    const empSheet = employeeData.sheets[revName];
+    if (empSheet) {
+      const confData = computeMatchConfidence(revSheet, empSheet);
+      const isExact = revName.toLowerCase() === empSheet.name.toLowerCase() && confData.confidence >= 95.0;
+      sheetMatchesFromRun.push({
+        reviewerSheetName: revName,
+        matchedEmployeeSheets: [revName],
+        matchType: isExact ? "Direct Match" : "Fuzzy Match",
+        matchConfidence: confData.confidence,
+        factors: confData.factors
+      });
+      continue;
+    }
+
+    // 4. Other fuzzy matches in employee workbook
+    let bestCandidate: string | null = null;
+    let bestConf = 0;
+    let bestFactors = { nameSimilarity: 0, headerSimilarity: 0, structuralSimilarity: 0, dataOverlap: 0 };
+
+    for (const empKey of Object.keys(employeeData.sheets)) {
+      const eSheet = employeeData.sheets[empKey];
+      if (shouldExcludeSheet(
+        empKey, 
+        eSheet.maxRow, 
+        Object.keys(eSheet.cells).length, 
+        config.autoIgnoreEnabled, 
+        config.customIgnorePatterns
+      )) {
+        continue;
+      }
+      const confData = computeMatchConfidence(revSheet, eSheet);
+      if (confData.confidence > bestConf && confData.confidence >= 25.0) {
+        bestConf = confData.confidence;
+        bestCandidate = empKey;
+        bestFactors = confData.factors;
+      }
+    }
+
+    if (bestCandidate) {
+      sheetMatchesFromRun.push({
+        reviewerSheetName: revName,
+        matchedEmployeeSheets: [bestCandidate],
+        matchType: "Fuzzy Match",
+        matchConfidence: bestConf,
+        factors: bestFactors
+      });
+    } else {
+      // Unmatched
+      sheetMatchesFromRun.push({
+        reviewerSheetName: revName,
+        matchedEmployeeSheets: [],
+        matchType: "Fuzzy Match",
+        matchConfidence: 0,
+        factors: {
+          nameSimilarity: 0,
+          headerSimilarity: 0,
+          structuralSimilarity: 0,
+          dataOverlap: 0
+        }
+      });
+    }
+  }
+
+  // REQUIREMENT 4: Compile root cause clusters
+  const compiledClusters = compileRootCauseClusters(consolidatedErrorLog, allShiftEvents, patterns);
+
   return {
     config,
     metrics,
@@ -2792,6 +3375,147 @@ export function executeQAEvaluation(
     errorLog: consolidatedErrorLog,
     patterns,
     coachingRecommendations,
-    virtualSheets
+    virtualSheets,
+    sheetMatches: sheetMatchesFromRun,
+    rootCauseClusters: compiledClusters
   };
+}
+
+/**
+ * Groups and analyzes the error log and patterns into root cause clusters
+ */
+export function compileRootCauseClusters(
+  errorLog: ErrorLogEntry[],
+  shiftEvents: ShiftEvent[],
+  patterns: PatternFindings
+): RootCauseCluster[] {
+  const clusters: RootCauseCluster[] = [];
+  let clusterIdCounter = 1;
+
+  // 1. Row shifts clustering
+  const rowShifts = shiftEvents.filter(s => s.type === "row");
+  for (const s of rowShifts) {
+    clusters.push({
+      id: `cluster-${clusterIdCounter++}`,
+      type: "row_shift",
+      sheetName: s.sheetName,
+      title: "Data Row Shift Phenomenon Detected",
+      description: `Likely Root Cause: Data shifted by ${s.offset > 0 ? "+" : ""}${s.offset} rows starting around Row ${s.spanStart + 1}. This offset cascade affects ${s.affectedCellsCount} cells before recovery or end-of-grid.`,
+      symptomCount: s.affectedCellsCount,
+      severity: "Critical"
+    });
+  }
+
+  // 2. Column shifts clustering
+  const colShifts = shiftEvents.filter(s => s.type === "column");
+  for (const s of colShifts) {
+    // Determine column letter from zero-indexed col index
+    let colLet = "?";
+    try {
+      const charCode = 65 + (s.spanStart % 26);
+      colLet = String.fromCharCode(charCode);
+    } catch(e) {}
+
+    clusters.push({
+      id: `cluster-${clusterIdCounter++}`,
+      type: "column_shift",
+      sheetName: s.sheetName,
+      title: "Column Insertion or Layout Shift Detected",
+      description: `Likely Root Cause: Column insertion or misalignment detected around column index ${colLet}. Auditor recommendation: verify if a column was inserted or deleted.`,
+      symptomCount: s.affectedCellsCount,
+      severity: "Critical"
+    });
+  }
+
+  // 3. Repeated values / Copy-paste errors
+  if (patterns.copyPasteErrors && patterns.copyPasteErrors.length > 0) {
+    for (const cp of patterns.copyPasteErrors) {
+      clusters.push({
+        id: `cluster-${clusterIdCounter++}`,
+        type: "copy_paste",
+        sheetName: "All Workbook",
+        title: "Systematic Copy-Paste Mismatch",
+        description: `Likely Root Cause: Repeating block copying or formula dragging error. Pattern occurrences: ${cp}.`,
+        symptomCount: 5,
+        severity: "High"
+      });
+    }
+  }
+
+  // 4. Repeated numeric substitutions
+  if (patterns.repeatedNumericErrors && patterns.repeatedNumericErrors.length > 0) {
+    for (const d of patterns.repeatedNumericErrors) {
+      clusters.push({
+        id: `cluster-${clusterIdCounter++}`,
+        type: "value_substitution",
+        sheetName: "All Workbook",
+        title: "Keyboard Numerical Entry Defect Pattern",
+        description: `Likely Root Cause: Numpad transposition or repeated digit entry oversight. Pattern: ${d}.`,
+        symptomCount: 3,
+        severity: "Medium"
+      });
+    }
+  }
+
+  // 5. Layout splits/merges
+  const splitsMet = errorLog.filter(e => e.errorType === ErrorType.TableSplit);
+  for (const s of splitsMet) {
+    clusters.push({
+      id: `cluster-${clusterIdCounter++}`,
+      type: "structural_mismatch",
+      sheetName: s.sheet,
+      title: "Multi-Sheet Table Split Event",
+      description: `Likely Root Cause: The reviewer table was structured into multiple physical sheets: [${s.employeeValue}] in the worker file. Suppressed baseline missing/extra table penalties.`,
+      symptomCount: 1,
+      severity: "High"
+    });
+  }
+
+  const mergesMet = errorLog.filter(e => e.errorType === ErrorType.TableMerge);
+  for (const m of mergesMet) {
+    clusters.push({
+      id: `cluster-${clusterIdCounter++}`,
+      type: "structural_mismatch",
+      sheetName: m.sheet,
+      title: "Workbook Structural Table Merge Event",
+      description: `Likely Root Cause: Multiple physical reviewer sheets were combined into a singular sheet: '${m.sheet}' in the worker file. Standard standard missing table row/column penalties suppressed.`,
+      symptomCount: 1,
+      severity: "High"
+    });
+  }
+
+  // 6. Template Cell Misalignment Empty Cell Clusters
+  const emptyCellErrors = errorLog.filter(e => e.errorType === ErrorType.MissingValue || e.errorType === ErrorType.ExtraValue || e.errorType === ErrorType.MissingCell || e.errorType === ErrorType.ExtraCell);
+  const sheetsEmptyCounts: Record<string, number> = {};
+  for (const e of emptyCellErrors) {
+    sheetsEmptyCounts[e.sheet] = (sheetsEmptyCounts[e.sheet] || 0) + 1;
+  }
+  for (const [sName, count] of Object.entries(sheetsEmptyCounts)) {
+    if (count >= 15) {
+      clusters.push({
+        id: `cluster-${clusterIdCounter++}`,
+        type: "empty_cell_dense",
+        sheetName: sName,
+        title: "Systemic Empty Cell Density Hotspot",
+        description: `Likely Root Cause: Excessive blank/populated cell disagreement (${count} symptoms). This is commonly caused by an offset template draft or incomplete data entry in dense regions.`,
+        symptomCount: count,
+        severity: "High"
+      });
+    }
+  }
+
+  // Fallback
+  if (clusters.length === 0 && errorLog.length > 0) {
+    clusters.push({
+      id: `cluster-${clusterIdCounter++}`,
+      type: "general",
+      sheetName: "All Workbook",
+      title: "Localized Random Defects",
+      description: "Likely Root Cause: Scattered isolated typos with no systematic row or column alignment propagation trends.",
+      symptomCount: errorLog.length,
+      severity: "Low"
+    });
+  }
+
+  return clusters;
 }

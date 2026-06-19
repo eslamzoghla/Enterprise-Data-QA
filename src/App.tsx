@@ -1,6 +1,12 @@
 import React, { useState, useMemo, useEffect } from "react";
 import * as XLSX from "xlsx";
 import { motion, AnimatePresence } from "motion/react";
+import { jsPDF } from "jspdf";
+import html2canvas from "html2canvas";
+
+if (typeof window !== "undefined") {
+  (window as any).html2canvas = html2canvas;
+}
 import {
   Upload,
   CheckCircle,
@@ -23,7 +29,15 @@ import {
   RefreshCw,
   Printer,
   Plus,
-  ExternalLink
+  ExternalLink,
+  Award,
+  TrendingUp,
+  TrendingDown,
+  Copy,
+  FileText,
+  Check,
+  FileJson,
+  ShieldAlert
 } from "lucide-react";
 
 declare global {
@@ -139,7 +153,9 @@ export default function App() {
     missingRowCoefficient: 2,
     numericDifferenceCoefficient: 0.1,
     textDifferenceCoefficient: 0.1,
-    emptyCellDifferenceCoefficient: 0.05
+    emptyCellDifferenceCoefficient: 0.05,
+    autoIgnoreEnabled: true,
+    customIgnorePatterns: "Cover, Index, Notes, Metadata, Instructions"
   });
 
   // Upload/Data state
@@ -151,11 +167,24 @@ export default function App() {
   const [isComparingStarted, setIsComparingStarted] = useState(false);
 
   // Layout navigation state
-  const [activeTab, setActiveTab] = useState<"dashboard" | "errorLog" | "sheetExplorer" | "patterns" | "aiAuditor">("dashboard");
+  const [activeTab, setActiveTab] = useState<"dashboard" | "errorLog" | "sheetExplorer" | "patterns" | "aiAuditor" | "mappingExplorer" | "benchmark">("dashboard");
   const [selectedSheetExplorer, setSelectedSheetExplorer] = useState<string>("");
   const [explorerViewMode, setExplorerViewMode] = useState<"sideBySide" | "grid">("sideBySide");
   const [activeErrorFilter, setActiveErrorFilter] = useState<"ALL" | "STRUCTURAL" | "SHIFT" | "RANGE" | "NUMERIC" | "TEXT" | "HEADER">("ALL");
   const [forceShowAllErrors, setForceShowAllErrors] = useState(false);
+
+  // New Heatmap Overlay and Theme customization
+  const [showHeatmap, setShowHeatmap] = useState<boolean>(false);
+  const [heatmapTheme, setHeatmapTheme] = useState<"coral" | "ruby" | "emerald">("coral");
+
+  // Benchmark and Regression Testing Baseline Run
+  const [benchmarkBaseline, setBenchmarkBaseline] = useState<any | null>(null);
+  const [baselineFileName, setBaselineFileName] = useState<string>("");
+  const [baselineUploadError, setBaselineUploadError] = useState<string | null>(null);
+  
+  // Custom Print error handles for sandboxed browser iframes
+  const [showPrintModal, setShowPrintModal] = useState<boolean>(false);
+  const [printError, setPrintError] = useState<string | null>(null);
 
   // Sorting and Filtering for detailed error logs
   const [logFilterSeverity, setLogFilterSeverity] = useState<string>("ALL");
@@ -370,7 +399,9 @@ export default function App() {
     config.missingRowCoefficient,
     config.numericDifferenceCoefficient,
     config.textDifferenceCoefficient,
-    config.emptyCellDifferenceCoefficient
+    config.emptyCellDifferenceCoefficient,
+    config.autoIgnoreEnabled,
+    config.customIgnorePatterns
   ]);
 
   // Fast O(1) error rendering lookup map for currently selected sheet
@@ -786,6 +817,64 @@ export default function App() {
     setIsComparingStarted(false);
   };
 
+  const handleBaselineJSONUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setBaselineFileName(file.name);
+    setBaselineUploadError(null);
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      try {
+        const json = JSON.parse(event.target?.result as string);
+        if (json && (json.metrics || json.accuracy !== undefined)) {
+          const normalizedBaseline = {
+            accuracy: json.metrics?.accuracyRatio ?? json.accuracy ?? 1,
+            totalErrors: json.errorLog?.length ?? json.totalErrors ?? 0,
+            penaltyScore: json.metrics?.totalStructuralPenalty ?? json.penaltyScore ?? 0,
+            grade: json.metrics?.grade ?? json.grade ?? 'A',
+            date: json.config?.evaluationDate ?? json.date ?? new Date().toLocaleDateString(),
+            projectName: json.config?.projectName ?? json.projectName ?? "Imported Run"
+          };
+          setBenchmarkBaseline(normalizedBaseline);
+        } else {
+          throw new Error("Invalid baseline schema. Missing quality metrics.");
+        }
+      } catch (err: any) {
+        setBaselineUploadError("Failed to parse JSON baseline: " + err.message);
+        setBenchmarkBaseline(null);
+      }
+    };
+    reader.readAsText(file);
+  };
+
+  const saveCurrentAsBaseline = () => {
+    if (!qaAnalysis) return;
+    const currentBaseline = {
+      accuracy: qaAnalysis.metrics.accuracyRatio,
+      totalErrors: qaAnalysis.errorLog.length,
+      penaltyScore: qaAnalysis.metrics.totalStructuralPenalty || 0,
+      grade: qaAnalysis.metrics.grade || 'C',
+      date: config.evaluationDate || new Date().toLocaleDateString(),
+      projectName: config.projectName || "Active Run"
+    };
+    setBenchmarkBaseline(currentBaseline);
+    setBaselineFileName("Active Session Snapshot");
+    setBaselineUploadError(null);
+  };
+
+  const exportCurrentRunJSON = () => {
+    if (!qaAnalysis) return;
+    const blob = new Blob([JSON.stringify(qaAnalysis, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `QA_Compliance_Report_${config.projectName.replace(/\s+/g, '_')}_${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
   // Trigger Gemini AI professional assessor route
   const triggerAIAudit = async () => {
     if (!qaAnalysis) return;
@@ -903,9 +992,100 @@ export default function App() {
 
   const totalErrorsCount = qaAnalysis ? qaAnalysis.errorLog.length : 0;
 
+  const [copiedUrl, setCopiedUrl] = useState<boolean>(false);
+
+  const copySandboxUrlToClipboard = () => {
+    navigator.clipboard.writeText(window.location.href);
+    setCopiedUrl(true);
+    setTimeout(() => setCopiedUrl(false), 2000);
+  };
+
+  const generatePDFCertificate = async () => {
+    if (!qaAnalysis) return;
+    const projectName = config.projectName ? config.projectName.replace(/\s+/g, '_') : "Audit";
+    
+    try {
+      const element = document.getElementById("pdf-certificate-content");
+      if (!element) {
+        throw new Error("PDF Certificate content element ('pdf-certificate-content') was not found in the DOM.");
+      }
+
+      const pdf = new jsPDF({
+        orientation: "portrait",
+        unit: "pt",
+        format: "a4"
+      });
+
+      // Render the offscreen HTML template to custom pages
+      await pdf.html(element, {
+        html2canvas: {
+          scale: 1.5, // Enhances typography crispness and prevents blur
+          useCORS: true,
+          logging: false
+        },
+        x: 40,
+        y: 40,
+        width: 515.28,    // 595.28 (A4 width) - 80 (margins left + right)
+        windowWidth: 800, // Forces responsive styles viewport width
+        margin: [40, 40, 60, 40], // Margins: [top, left, bottom, right]
+        autoPaging: "text",
+        callback: function (doc) {
+          try {
+            const totalPages = doc.getNumberOfPages();
+            const timestamp = new Date().toLocaleString("en-US", {
+              year: "numeric",
+              month: "2-digit",
+              day: "2-digit",
+              hour: "2-digit",
+              minute: "2-digit",
+              second: "2-digit",
+              hour12: false
+            });
+
+            // Post-process each page to add standardized page numbers and generation timestamp
+            for (let i = 1; i <= totalPages; i++) {
+              doc.setPage(i);
+              doc.setFontSize(8);
+              doc.setTextColor(148, 163, 184); // slate-400 color
+              
+              // Draw footer lines
+              const footerY = 810; // A4 height is 841.89
+              doc.text(`Generated on: ${timestamp} | Reference: ${config.evaluationDate}`, 40, footerY);
+              doc.text(`Page ${i} of ${totalPages}`, 555, footerY, { align: "right" });
+            }
+
+            doc.save(`Compliance_Certificate_${projectName}.pdf`);
+          } catch (internalErr: any) {
+            console.error("Internal PDF styling finalizing failed:", internalErr);
+            alert("PDF generation failed during final page-numbering step: " + internalErr.message);
+          }
+        }
+      });
+    } catch (error: any) {
+      console.error("Critical PDF Generation Error:", error);
+      alert("Failed to compile and export the requested PDF Certificate: " + error.message);
+    }
+  };
+
   // Print friendly audit generator
   const triggerPrint = () => {
-    window.print();
+    const isIframe = window.self !== window.top;
+    if (isIframe) {
+      console.warn("Iframe Sandbox Mode Restriction Checked - standard print triggered option fallback.");
+      setPrintError("Direct browser printing triggers are limited inside secure embedded iframe environments.");
+      setShowPrintModal(true);
+      return;
+    }
+    try {
+      if (typeof window.print !== "function") {
+        throw new Error("Local print API is not supported in this frame.");
+      }
+      window.print();
+    } catch (err: any) {
+      console.warn("Standard printing failed or was blocked: ", err);
+      setPrintError(err?.message || "Iframe Sandbox Mode Restriction Detected.");
+      setShowPrintModal(true);
+    }
   };
 
   return (
@@ -940,12 +1120,6 @@ export default function App() {
             </button>
           ) : (
             <div className="flex items-center gap-2">
-              <button
-                onClick={loadDemoState}
-                className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold border border-slate-200 rounded cursor-pointer transition"
-              >
-                Reload Demo Data
-              </button>
               <button
                 onClick={triggerPrint}
                 className="px-4 py-1.5 bg-slate-800 text-white text-xs font-semibold rounded hover:bg-slate-700 cursor-pointer transition shadow-xs"
@@ -1414,6 +1588,44 @@ export default function App() {
                 </div>
               </div>
             </div>
+
+            {/* Auto Ignore Sheets System Control */}
+            <div className="mt-6 border-t border-slate-200 pt-5 pr-1 pl-1">
+              <div className="flex items-center gap-2 mb-4">
+                <Filter className="w-4 h-4 text-slate-600" />
+                <h4 className="font-bold text-xs uppercase tracking-wider font-mono text-slate-700">Auto Ignore Sheet Patterns System</h4>
+              </div>
+              <div className="bg-slate-50/50 p-4 rounded-xl border border-slate-150 space-y-4">
+                <div className="flex items-center gap-3">
+                  <input
+                    id="autoIgnoreEnabled"
+                    type="checkbox"
+                    checked={config.autoIgnoreEnabled}
+                    onChange={(e) => setConfig({ ...config, autoIgnoreEnabled: e.target.checked })}
+                    className="w-4 h-4 text-indigo-650 bg-white border-slate-300 rounded focus:ring-indigo-500 cursor-pointer pointer-events-auto"
+                  />
+                  <label htmlFor="autoIgnoreEnabled" className="text-xs text-slate-750 font-bold select-none cursor-pointer">
+                    Enable Auto Ignore Rules
+                  </label>
+                </div>
+                <div>
+                  <label className="block text-slate-600 text-xs font-semibold mb-1">
+                    Ignore Patterns (Comma-separated exact names, wildcard sub-strings, or `/RegEx/i`)
+                  </label>
+                  <input
+                    type="text"
+                    value={config.customIgnorePatterns}
+                    disabled={!config.autoIgnoreEnabled}
+                    onChange={(e) => setConfig({ ...config, customIgnorePatterns: e.target.value })}
+                    className="w-full px-3 py-1.5 text-xs border border-slate-200 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-505/20 focus:border-indigo-500 transition duration-150 bg-white disabled:bg-slate-100 disabled:text-slate-400 font-mono"
+                    placeholder="e.g. Cover, Index, Notes, /Metadata/i, ^Instructions$"
+                  />
+                  <p className="text-[10px] text-slate-400 mt-1 leading-normal">
+                    Matches cover pages, instruction lists, or metadata grids and ignores them dynamically during evaluation to avoid false omit alerts.
+                  </p>
+                </div>
+              </div>
+            </div>
             
             <div className="mt-8 pt-4 border-t border-slate-100 flex items-center justify-center">
               <button
@@ -1546,6 +1758,28 @@ export default function App() {
             >
               AI Executive Audit
               <Sparkles className="w-3.5 h-3.5 text-indigo-600 animate-pulse" />
+            </button>
+            <button
+              onClick={() => setActiveTab("mappingExplorer")}
+              className={`px-4 py-2.5 border-b-2 font-bold transition whitespace-nowrap flex items-center gap-1.5 cursor-pointer ${
+                activeTab === "mappingExplorer"
+                  ? "border-indigo-600 text-indigo-700 bg-indigo-50/30 rounded-t-lg"
+                  : "border-transparent text-slate-500 hover:text-slate-800 hover:bg-slate-50 rounded-t-lg"
+              }`}
+            >
+              Mapping Explorer
+              <Layers className="w-3.5 h-3.5 text-indigo-500" />
+            </button>
+            <button
+              onClick={() => setActiveTab("benchmark")}
+              className={`px-4 py-2.5 border-b-2 font-bold transition whitespace-nowrap flex items-center gap-1.5 cursor-pointer ${
+                activeTab === "benchmark"
+                  ? "border-indigo-600 text-indigo-700 bg-indigo-50/30 rounded-t-lg"
+                  : "border-transparent text-slate-500 hover:text-slate-800 hover:bg-slate-50 rounded-t-lg"
+              }`}
+            >
+              Regressions & Benchmark
+              <Activity className="w-3.5 h-3.5 text-emerald-500" />
             </button>
           </div>
 
@@ -2441,7 +2675,7 @@ export default function App() {
                     </div>
                   </div>
 
-                  <div className="flex items-center gap-2">
+                  <div className="flex flex-wrap items-center gap-3">
                     <span className="text-[10px] font-mono uppercase text-slate-400 font-bold tracking-wider">View Options:</span>
                     <button
                       onClick={() => setExplorerViewMode("sideBySide")}
@@ -2459,6 +2693,37 @@ export default function App() {
                     >
                       Coord Overlay Audit Grid
                     </button>
+
+                    {/* Interactive Heatmap Overlay Controls */}
+                    <div className="flex items-center gap-4 bg-slate-50 border border-slate-200/70 p-1 px-3 rounded-lg text-xs">
+                      <div className="flex items-center gap-2">
+                        <input
+                          id="showHeatmapCheck"
+                          type="checkbox"
+                          checked={showHeatmap}
+                          onChange={(e) => setShowHeatmap(e.target.checked)}
+                          className="w-3.5 h-3.5 text-indigo-650 bg-white border-slate-300 rounded focus:ring-indigo-505 cursor-pointer pointer-events-auto"
+                        />
+                        <label htmlFor="showHeatmapCheck" className="text-[10px] font-mono text-slate-700 uppercase font-bold select-none cursor-pointer">
+                          Heatmap Overlay
+                        </label>
+                      </div>
+
+                      {showHeatmap && (
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-[9px] font-mono text-slate-400 font-bold uppercase">Theme:</span>
+                          <select
+                            value={heatmapTheme}
+                            onChange={(e) => setHeatmapTheme(e.target.value as any)}
+                            className="bg-white border border-slate-250 py-0.5 px-2 rounded text-[10px] font-mono font-bold text-slate-750 focus:outline-none focus:ring-1 focus:ring-indigo-500 pointer-events-auto"
+                          >
+                            <option value="coral">Classic Coral</option>
+                            <option value="ruby">Volcanic Ruby</option>
+                            <option value="emerald">Emerald Field</option>
+                          </select>
+                        </div>
+                      )}
+                    </div>
                   </div>
                 </div>
 
@@ -2685,7 +2950,39 @@ export default function App() {
                                         const cell = employeeWb?.sheets[selectedSheetExplorer]?.cells[key];
 
                                         let bgCol = "bg-white";
-                                        if (hasErr) {
+                                        const heatmapCount = showHeatmap ? (() => {
+                                          if (!qaAnalysis?.errorLog) return 0;
+                                          let count = 0;
+                                          for (const err of qaAnalysis.errorLog) {
+                                            if (err.sheet === selectedSheetExplorer && err.rowIndex !== undefined && err.colIndex !== undefined) {
+                                              if (Math.abs(err.rowIndex - rowIdx) <= 1 && Math.abs(err.colIndex - colIdx) <= 1) {
+                                                count++;
+                                              }
+                                            }
+                                          }
+                                          return count;
+                                        })() : 0;
+
+                                        if (showHeatmap) {
+                                          if (heatmapCount === 0) {
+                                            bgCol = "bg-slate-55 text-slate-350 border-slate-100";
+                                          } else if (heatmapTheme === "coral") {
+                                            if (heatmapCount === 1) bgCol = "bg-amber-100 text-amber-955 font-medium border-amber-200";
+                                            else if (heatmapCount === 2) bgCol = "bg-orange-120 text-orange-955 font-semibold border-orange-200";
+                                            else if (heatmapCount <= 4) bgCol = "bg-orange-300 text-orange-955 font-bold border-orange-400 ring-1 ring-inset ring-orange-400/20";
+                                            else bgCol = "bg-red-400 text-white font-bold border-red-500 ring-1 ring-inset ring-red-650 animate-pulse";
+                                          } else if (heatmapTheme === "ruby") {
+                                            if (heatmapCount === 1) bgCol = "bg-rose-100 text-rose-955 font-medium border-rose-250";
+                                            else if (heatmapCount === 2) bgCol = "bg-rose-205 text-rose-955 font-semibold border-rose-300";
+                                            else if (heatmapCount <= 4) bgCol = "bg-rose-400 text-white font-bold border-rose-500 ring-1 ring-inset ring-rose-550/20";
+                                            else bgCol = "bg-pink-705 text-white font-bold border-pink-850 ring-1 ring-inset ring-pink-905 animate-pulse";
+                                          } else {
+                                            if (heatmapCount === 1) bgCol = "bg-lime-50 text-lime-900 font-medium border-lime-200";
+                                            else if (heatmapCount === 2) bgCol = "bg-emerald-100 text-emerald-955 font-semibold border-emerald-250";
+                                            else if (heatmapCount <= 4) bgCol = "bg-emerald-305 text-emerald-955 font-bold border-emerald-450";
+                                            else bgCol = "bg-emerald-600 text-white font-bold border-emerald-750 ring-1 animate-pulse";
+                                          }
+                                        } else if (hasErr) {
                                           if (logEntry.errorType === ErrorType.RowShift || logEntry.errorType === ErrorType.ColumnShift || logEntry.errorType === ErrorType.MissingRow || logEntry.errorType === ErrorType.ExtraRow) {
                                             bgCol = "bg-amber-100/90 text-amber-950 font-semibold";
                                           } else {
@@ -2750,7 +3047,39 @@ export default function App() {
                                                 const cell = inspectorRevSheet?.cells[key];
 
                                                 let bgCol = "bg-white";
-                                                if (hasErr) {
+                                                const heatmapCount = showHeatmap ? (() => {
+                                                  if (!qaAnalysis?.errorLog) return 0;
+                                                  let count = 0;
+                                                  for (const err of qaAnalysis.errorLog) {
+                                                    if (err.sheet === selectedSheetExplorer && err.rowIndex !== undefined && err.colIndex !== undefined) {
+                                                      if (Math.abs(err.rowIndex - rowIdx) <= 1 && Math.abs(err.colIndex - colIdx) <= 1) {
+                                                        count++;
+                                                      }
+                                                    }
+                                                  }
+                                                  return count;
+                                                })() : 0;
+
+                                                if (showHeatmap) {
+                                                  if (heatmapCount === 0) {
+                                                    bgCol = "bg-slate-55 text-slate-350 border-slate-100";
+                                                  } else if (heatmapTheme === "coral") {
+                                                    if (heatmapCount === 1) bgCol = "bg-amber-100 text-amber-955 font-medium border-amber-200";
+                                                    else if (heatmapCount === 2) bgCol = "bg-orange-120 text-orange-955 font-semibold border-orange-200";
+                                                    else if (heatmapCount <= 4) bgCol = "bg-orange-300 text-orange-955 font-bold border-orange-400 ring-1 ring-inset ring-orange-400/20";
+                                                    else bgCol = "bg-red-400 text-white font-bold border-red-500 ring-1 ring-inset ring-red-650 animate-pulse";
+                                                  } else if (heatmapTheme === "ruby") {
+                                                    if (heatmapCount === 1) bgCol = "bg-rose-100 text-rose-955 font-medium border-rose-250";
+                                                    else if (heatmapCount === 2) bgCol = "bg-rose-205 text-rose-955 font-semibold border-rose-300";
+                                                    else if (heatmapCount <= 4) bgCol = "bg-rose-400 text-white font-bold border-rose-500 ring-1 ring-inset ring-rose-550/20";
+                                                    else bgCol = "bg-pink-705 text-white font-bold border-pink-850 ring-1 ring-inset ring-pink-905 animate-pulse";
+                                                  } else {
+                                                    if (heatmapCount === 1) bgCol = "bg-lime-50 text-lime-900 font-medium border-lime-200";
+                                                    else if (heatmapCount === 2) bgCol = "bg-emerald-100 text-emerald-955 font-semibold border-emerald-250";
+                                                    else if (heatmapCount <= 4) bgCol = "bg-emerald-305 text-emerald-955 font-bold border-emerald-450";
+                                                    else bgCol = "bg-emerald-600 text-white font-bold border-emerald-750 ring-1 animate-pulse";
+                                                  }
+                                                } else if (hasErr) {
                                                   if (logEntry.errorType === ErrorType.RowShift || logEntry.errorType === ErrorType.ColumnShift || logEntry.errorType === ErrorType.MissingRow || logEntry.errorType === ErrorType.ExtraRow) {
                                                     bgCol = "bg-amber-100/95 text-amber-950 font-semibold";
                                                   } else {
@@ -3087,6 +3416,473 @@ export default function App() {
                 )}
               </motion.div>
             )}
+
+            {activeTab === "mappingExplorer" && (
+              <motion.div
+                key="mappingExplorer"
+                initial={{ opacity: 0, y: 5 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -5 }}
+                transition={{ duration: 0.15 }}
+                className="space-y-6"
+              >
+                {/* Visual Mapping HUD Banner */}
+                <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                  <div className="bg-white p-5 border border-slate-200 rounded-xl shadow-xs">
+                    <span className="text-[10px] font-mono text-slate-400 uppercase tracking-widest font-bold">Matched Sheet Alignment</span>
+                    <h4 className="text-2xl font-black text-indigo-700 mt-1 font-sans">
+                      {qaAnalysis.sheetMatches?.length || 0}
+                    </h4>
+                    <p className="text-3xs text-slate-550 font-medium mt-1">Unique workbook sheets matched successfully</p>
+                  </div>
+
+                  <div className="bg-white p-5 border border-slate-200 rounded-xl shadow-xs">
+                    <span className="text-[10px] font-mono text-slate-400 uppercase tracking-widest font-bold">Fuzzy Alignments</span>
+                    <h4 className="text-2xl font-black text-amber-600 mt-1 font-sans">
+                      {qaAnalysis.sheetMatches?.filter((m: any) => m.matchType === "Fuzzy Match").length || 0}
+                    </h4>
+                    <p className="text-3xs text-slate-550 font-medium mt-1">Needs translation / minor typo tolerance</p>
+                  </div>
+
+                  <div className="bg-white p-5 border border-slate-200 rounded-xl shadow-xs">
+                    <span className="text-[10px] font-mono text-slate-400 uppercase tracking-widest font-bold">Merge/Split Groups</span>
+                    <h4 className="text-2xl font-black text-purple-605 mt-1 font-sans">
+                      {qaAnalysis.sheetMatches?.filter((m: any) => m.matchType === "Split Match" || m.matchType === "Merge Match").length || 0}
+                    </h4>
+                    <p className="text-3xs text-slate-555 font-medium mt-1">Complex layout variations isolated</p>
+                  </div>
+
+                  <div className="bg-white p-5 border border-slate-200 rounded-xl shadow-xs">
+                    <span className="text-[10px] font-mono text-slate-400 uppercase tracking-widest font-bold">Average Match Precision</span>
+                    <h4 className="text-2xl font-black text-emerald-600 mt-1 font-sans">
+                      {(() => {
+                        if (!qaAnalysis.sheetMatches || qaAnalysis.sheetMatches.length === 0) return "100%";
+                        const sum = qaAnalysis.sheetMatches.reduce((acc: number, val: any) => acc + val.matchConfidence, 0);
+                        return Math.round(sum / qaAnalysis.sheetMatches.length) + "%";
+                      })()}
+                    </h4>
+                    <p className="text-3xs text-slate-555 font-medium mt-1">Cross-matching similarity confidence weight</p>
+                  </div>
+                </div>
+
+                {/* Subtitle list header */}
+                <div className="flex items-center justify-between pointer-events-auto">
+                  <div>
+                    <h3 className="text-sm font-bold text-slate-800 uppercase tracking-wider font-mono flex items-center gap-2">
+                      <Layers className="w-4 h-4 text-indigo-505" /> Ground Truth Structural Pairings Explorer
+                    </h3>
+                    <p className="text-xs text-slate-550 font-sans mt-1">See precisely how the deterministic shift precedence engine maps incoming reviewer sheets to corresponding worker worksheets.</p>
+                  </div>
+                </div>
+
+                {/* Grid items */}
+                <div className="grid grid-cols-1 gap-4 font-sans">
+                  {(!qaAnalysis.sheetMatches || qaAnalysis.sheetMatches.length === 0) ? (
+                    <div className="text-center p-12 bg-white rounded-xl border border-dashed border-slate-195">
+                      <Layers className="w-8 h-8 text-slate-300 mx-auto mb-2" />
+                      <p className="text-xs text-slate-450 font-mono uppercase tracking-wider font-semibold">No sheet mappings loaded for evaluation.</p>
+                    </div>
+                  ) : (
+                    qaAnalysis.sheetMatches.map((m: any, idx: number) => {
+                      const confidenceVal = Math.round(m.matchConfidence < 1.1 ? m.matchConfidence * 100 : m.matchConfidence);
+                      
+                      return (
+                        <div key={idx} className="bg-white border border-slate-200 rounded-xl p-5 shadow-xs transition hover:shadow-sm">
+                          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                            {/* Visual Linking Card Section */}
+                            <div className="flex items-center gap-3 flex-1">
+                              <div className="p-2.5 bg-slate-50 border border-slate-200 rounded-lg min-w-[160px]">
+                                <span className="text-[9px] font-mono text-slate-400 block font-bold">SOURCE REVIEWER</span>
+                                <span className="text-xs font-black font-sans text-slate-700 truncate block max-w-[200px]" title={m.reviewerSheetName}>
+                                  {m.reviewerSheetName}
+                                </span>
+                              </div>
+                              
+                              <div className="flex flex-col items-center flex-shrink-0 px-2 font-sans">
+                                <span className="text-[10px] font-bold text-indigo-700 bg-indigo-50 border border-indigo-100 px-2 py-0.5 rounded">
+                                  {m.matchType}
+                                </span>
+                                <div className="h-0.5 w-12 border-t border-dashed border-slate-300 my-1"></div>
+                              </div>
+
+                              <div className="p-2.5 bg-indigo-50/20 border border-indigo-102 rounded-lg min-w-[160px]">
+                                <span className="text-[9px] font-mono text-indigo-500 block font-bold font-semibold">TARGET WORKERS</span>
+                                <span className="text-xs font-semibold font-sans text-indigo-955 truncate block max-w-[200px]" title={m.matchedEmployeeSheets.join(", ")}>
+                                  {m.matchedEmployeeSheets.join(", ") || "(No Sheets Matched)"}
+                                </span>
+                              </div>
+                            </div>
+
+                            {/* Confidence Progress */}
+                            <div className="flex items-center gap-6">
+                              <div className="text-right">
+                                <span className="text-[10px] text-slate-400 font-mono uppercase font-bold block">Match Confidence</span>
+                                <div className="flex items-center gap-2 mt-1">
+                                  <div className="w-24 bg-slate-100 rounded-full h-1.5 overflow-hidden">
+                                    <div 
+                                      className={`h-full rounded-full ${
+                                        confidenceVal >= 90 ? 'bg-emerald-500' : confidenceVal >= 75 ? 'bg-yellow-500' : 'bg-rose-500'
+                                      }`}
+                                      style={{ width: `${confidenceVal}%` }}
+                                    ></div>
+                                  </div>
+                                  <span className={`text-xs font-black font-sans ${
+                                    confidenceVal >= 90 ? 'text-emerald-600' : confidenceVal >= 75 ? 'text-yellow-600' : 'text-rose-600'
+                                  }`}>
+                                    {confidenceVal}%
+                                  </span>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* Factors Grid Block */}
+                          <div className="mt-4 pt-4 border-t border-slate-100 grid grid-cols-2 md:grid-cols-4 gap-4">
+                            <div className="p-2 bg-slate-50 border border-slate-150 rounded space-y-1">
+                              <span className="text-[9px] font-mono text-slate-400 block uppercase font-bold">Name Similarity</span>
+                              <div className="flex items-center justify-between">
+                                <span className="text-xs font-bold font-sans text-slate-700">
+                                  {Math.round((m.factors?.nameSimilarity ?? 1) * 100)}%
+                                </span>
+                              </div>
+                            </div>
+
+                            <div className="p-2 bg-slate-50 border border-slate-150 rounded space-y-1">
+                              <span className="text-[9px] font-mono text-slate-400 block uppercase font-bold">Header Similarity</span>
+                              <div className="flex items-center justify-between">
+                                <span className="text-xs font-bold font-sans text-slate-700">
+                                  {Math.round((m.factors?.headerSimilarity ?? 1) * 100)}%
+                                </span>
+                              </div>
+                            </div>
+
+                            <div className="p-2 bg-slate-50 border border-slate-150 rounded space-y-1">
+                              <span className="text-[9px] font-mono text-slate-400 block uppercase font-bold">Structural Dimensions</span>
+                              <div className="flex items-center justify-between">
+                                <span className="text-xs font-bold font-sans text-slate-700">
+                                  {Math.round((m.factors?.structuralSimilarity ?? 1) * 100)}%
+                                </span>
+                              </div>
+                            </div>
+
+                            <div className="p-2 bg-slate-50 border border-slate-150 rounded space-y-1">
+                              <span className="text-[9px] font-mono text-slate-400 block uppercase font-bold">Cell Data Overlap</span>
+                              <div className="flex items-center justify-between">
+                                <span className="text-xs font-bold font-sans text-slate-700">
+                                  {Math.round((m.factors?.dataOverlap ?? 1) * 100)}%
+                                </span>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              </motion.div>
+            )}
+
+            {activeTab === "benchmark" && (
+              <motion.div
+                key="benchmark"
+                initial={{ opacity: 0, y: 5 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -5 }}
+                transition={{ duration: 0.15 }}
+                className="space-y-6"
+              >
+                {/* Upper description */}
+                <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-xs flex flex-col md:flex-row md:items-center justify-between gap-4">
+                  <div className="space-y-1">
+                    <h3 className="text-sm font-bold text-slate-800 uppercase tracking-wider font-mono flex items-center gap-2">
+                      <Activity className="text-emerald-500 w-4 h-4" /> Compliance Regression Testing HUD
+                    </h3>
+                    <p className="text-xs text-slate-500 font-sans mt-1">
+                      Prevent employee error rates from inflating across revisions. Establish a benchmark reference baseline to cross-audit changes.
+                    </p>
+                  </div>
+                  
+                  {benchmarkBaseline && (
+                    <button
+                      onClick={() => {
+                        setBenchmarkBaseline(null);
+                        setBaselineFileName("");
+                        setBaselineUploadError(null);
+                      }}
+                      className="px-3 py-1.5 bg-slate-150 hover:bg-slate-200 text-slate-700 text-3xs font-semibold uppercase tracking-wider font-mono border border-slate-205 rounded cursor-pointer transition flex items-center gap-1 self-start md:self-auto"
+                    >
+                      Clear Active Baseline
+                    </button>
+                  )}
+                </div>
+
+                {/* Main section: Either prompt calibration OR show the full matrix comparison view */}
+                {!benchmarkBaseline ? (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6 font-sans">
+                    {/* Left Panel: Seal active assessment as baseline */}
+                    <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-xs flex flex-col justify-between space-y-5">
+                      <div className="space-y-3">
+                        <div className="w-10 h-10 bg-indigo-50 border border-indigo-100 rounded-lg flex items-center justify-center">
+                          <CheckCircle className="w-5 h-5 text-indigo-600" />
+                        </div>
+                        <h4 className="text-sm font-bold text-slate-800 font-sans">Lock Current Assessment as Baseline</h4>
+                        <p className="text-xs text-slate-500 leading-relaxed font-sans mt-1">
+                          Use the current employee analysis metrics as the active reference checkpoint. The system will mathematically cross-examine future assessments against these exact scores:
+                        </p>
+                        
+                        <div className="p-3.5 bg-slate-50 rounded-lg border border-slate-150 space-y-2 font-mono text-[11px] mt-2">
+                          <div className="flex justify-between">
+                            <span className="text-slate-400">Project Preset:</span>
+                            <span className="font-bold text-slate-700">{config.projectName || "Default Audit"}</span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-slate-400">Total Score:</span>
+                            <span className="font-bold text-emerald-600">{qaAnalysis.metrics.accuracyRatio.toFixed(2)}%</span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-slate-400">Error Registry:</span>
+                            <span className="font-bold text-slate-700">{qaAnalysis.errorLog.length} errors</span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-slate-400 font-medium">Layout Grade:</span>
+                            <span className="font-extrabold text-indigo-600 bg-indigo-50 px-1.5 py-0.2 rounded border border-indigo-100">{qaAnalysis.metrics.grade || "C"}</span>
+                          </div>
+                        </div>
+                      </div>
+
+                      <button
+                        onClick={saveCurrentAsBaseline}
+                        className="w-full text-center py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded transition shadow-xs cursor-pointer"
+                      >
+                        Capture Assessment Checklist
+                      </button>
+                    </div>
+
+                    {/* Right Panel: Import JSON file */}
+                    <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-xs flex flex-col justify-between space-y-5">
+                      <div className="space-y-3">
+                        <div className="w-10 h-10 bg-amber-50 border border-amber-100 rounded-lg flex items-center justify-center">
+                          <Upload className="w-5 h-5 text-amber-600" />
+                        </div>
+                        <h4 className="text-sm font-bold text-slate-800 font-sans">Upload Benchmark Blueprint (JSON)</h4>
+                        <p className="text-xs text-slate-500 leading-relaxed font-sans mt-1">
+                          Import any previously exported compliance result file to calibrate regression testing. Uploading a prior report lets you execute comparisons offline.
+                        </p>
+
+                        <div className="border border-dashed border-slate-300 rounded-lg p-6 bg-slate-50 text-center relative hover:bg-slate-100/50 transition">
+                          <input
+                            type="file"
+                            accept=".json"
+                            onChange={handleBaselineJSONUpload}
+                            className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                          />
+                          <FileJson className="w-8 h-8 text-slate-400 mx-auto mb-2 animate-pulse" />
+                          <span className="text-xs font-sans text-slate-500 font-medium block">
+                            Click or drag JSON blueprint here to import
+                          </span>
+                        </div>
+                        
+                        {baselineUploadError && (
+                          <p className="text-3xs font-mono font-bold text-rose-500 bg-rose-50 p-2 rounded border border-rose-100 mt-2">
+                            {baselineUploadError}
+                          </p>
+                        )}
+                      </div>
+
+                      <span className="text-[10px] text-slate-400 italic block text-center font-mono uppercase tracking-wider font-semibold">
+                        * Accepts ground-truth JSON analysis outputs only.
+                      </span>
+                    </div>
+                  </div>
+                ) : (
+                  // Benchmark active results matrix comparison HUD
+                  <div className="space-y-6">
+                    
+                    {/* Active Baseline HUD Header Badge */}
+                    <div className="bg-emerald-50 border border-emerald-200 rounded-xl px-5 py-4 flex items-center justify-between font-sans">
+                      <div className="flex items-center gap-3">
+                        <div className="w-8 h-8 bg-emerald-100 border border-emerald-200 rounded flex items-center justify-center">
+                          <Award className="w-4.5 h-4.5 text-emerald-700 font-semibold" />
+                        </div>
+                        <div>
+                          <p className="text-[10px] font-mono text-emerald-600 uppercase tracking-wider font-bold">Calibration Reference Blueprint Locked</p>
+                          <h4 className="text-xs font-black text-emerald-900">
+                            {baselineFileName} <span className="font-mono text-[10px] text-emerald-600/70">({benchmarkBaseline.projectName} • {benchmarkBaseline.date})</span>
+                          </h4>
+                        </div>
+                      </div>
+
+                      <span className="text-[10px] font-mono bg-emerald-600 text-white px-2.5 py-1 rounded font-bold uppercase">
+                        ACTIVE BENCHMARK
+                      </span>
+                    </div>
+
+                    {/* HUD Matrices */}
+                    {(() => {
+                      const accuracyDelta = qaAnalysis.metrics.accuracyRatio - benchmarkBaseline.accuracy;
+                      const errorsDelta = qaAnalysis.errorLog.length - benchmarkBaseline.totalErrors;
+                      const penaltyDelta = (qaAnalysis.metrics.totalStructuralPenalty || 0) - benchmarkBaseline.penaltyScore;
+                      const regressed = accuracyDelta < -0.01 || errorsDelta > 0 || penaltyDelta > 0;
+
+                      return (
+                        <div className="space-y-6 font-sans">
+                          {/* Comparative tiles */}
+                          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                            
+                            {/* Score Tile */}
+                            <div className="bg-white border border-slate-200 p-5 rounded-xl shadow-xs space-y-3">
+                              <span className="text-[10px] font-mono text-slate-400 uppercase tracking-widest font-bold block">Compliance Accuracy</span>
+                              <div className="flex items-baseline justify-between">
+                                <div>
+                                  <span className="text-2xl font-black text-slate-800">{qaAnalysis.metrics.accuracyRatio.toFixed(2)}%</span>
+                                  <span className="text-3xs text-slate-400 block mt-1">Baseline: {benchmarkBaseline.accuracy.toFixed(2)}%</span>
+                                </div>
+                                
+                                {accuracyDelta > 0.01 ? (
+                                  <span className="inline-flex items-center gap-1 text-[10px] font-mono font-bold bg-emerald-50 text-emerald-700 px-2 py-0.5 rounded-full border border-emerald-100">
+                                    <TrendingUp className="w-3 h-3" /> +{accuracyDelta.toFixed(2)}%
+                                  </span>
+                                ) : accuracyDelta < -0.01 ? (
+                                  <span className="inline-flex items-center gap-1 text-[10px] font-mono font-bold bg-rose-50 text-rose-700 px-2 py-0.5 rounded-full border border-rose-100">
+                                    <TrendingDown className="w-3 h-3" /> {accuracyDelta.toFixed(2)}%
+                                  </span>
+                                ) : (
+                                  <span className="inline-flex items-center text-[10px] font-mono bg-slate-100 text-slate-500 px-2 py-0.5 rounded-full border border-slate-200 font-bold">
+                                    STABLE
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+
+                            {/* Total Errors count */}
+                            <div className="bg-white border border-slate-200 p-5 rounded-xl shadow-xs space-y-3">
+                              <span className="text-[10px] font-mono text-slate-400 uppercase tracking-widest font-bold block">Spelling & Data Errors</span>
+                              <div className="flex items-baseline justify-between">
+                                <div>
+                                  <span className="text-2xl font-black text-slate-800">{qaAnalysis.errorLog.length}</span>
+                                  <span className="text-3xs text-slate-400 block mt-1">Baseline: {benchmarkBaseline.totalErrors}</span>
+                                </div>
+
+                                {errorsDelta > 0 ? (
+                                  <span className="inline-flex items-center gap-1 text-[10px] font-mono font-bold bg-rose-50 text-rose-700 px-2 py-0.5 rounded-full border border-rose-100 font-bold">
+                                    +{errorsDelta} regression
+                                  </span>
+                                ) : errorsDelta < 0 ? (
+                                  <span className="inline-flex items-center gap-1 text-[10px] font-mono font-bold bg-emerald-50 text-emerald-705 px-2 py-0.5 rounded-full border border-emerald-100 font-bold">
+                                    {errorsDelta} improved
+                                  </span>
+                                ) : (
+                                  <span className="inline-flex items-center text-[10px] font-mono bg-slate-100 text-slate-500 px-2 py-0.5 rounded-full border border-slate-200 font-bold">
+                                    STABLE
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+
+                            {/* Structural Penalty weights */}
+                            <div className="bg-white border border-slate-200 p-5 rounded-xl shadow-xs space-y-3">
+                              <span className="text-[10px] font-mono text-slate-400 uppercase tracking-widest font-bold block">Penalty Weight Accumulation</span>
+                              <div className="flex items-baseline justify-between">
+                                <div>
+                                  <span className="text-2xl font-black text-slate-800">{qaAnalysis.metrics.totalStructuralPenalty || 0} pts</span>
+                                  <span className="text-3xs text-slate-400 block mt-1">Baseline: {benchmarkBaseline.penaltyScore} pts</span>
+                                </div>
+
+                                {penaltyDelta > 0 ? (
+                                  <span className="inline-flex items-center gap-1 text-[10px] font-mono font-bold bg-rose-50 text-rose-700 px-2 py-0.5 rounded-full border border-rose-100">
+                                    +{penaltyDelta} regression
+                                  </span>
+                                ) : penaltyDelta < 0 ? (
+                                  <span className="inline-flex items-center gap-1 text-[10px] font-mono font-bold bg-emerald-50 text-emerald-700 px-2 py-0.5 rounded-full border border-emerald-100 font-bold">
+                                    {penaltyDelta} points
+                                  </span>
+                                ) : (
+                                  <span className="inline-flex items-center text-[10px] font-mono bg-slate-100 text-slate-500 px-2 py-0.5 rounded-full border border-slate-200 font-bold">
+                                    STABLE
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+
+                          </div>
+
+                          {/* Diagnosis feedback block */}
+                          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                            
+                            {/* Detailed Diagnosis Column */}
+                            <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-xs md:col-span-2 space-y-4">
+                              <h4 className="text-xs font-bold uppercase tracking-widest font-mono text-slate-500 border-b border-slate-100 pb-2">Regression Diagnosis & Performance Drift</h4>
+                              
+                              {regressed ? (
+                                <div className="space-y-4">
+                                  <div className="p-4 bg-rose-50 border border-rose-200 rounded-lg flex gap-3 text-rose-950">
+                                    <ShieldAlert className="w-5 h-5 text-rose-600 flex-shrink-0 mt-0.5" />
+                                    <div>
+                                      <h5 className="font-bold text-xs">Compliance Standards Drift Warning</h5>
+                                      <p className="text-xs text-rose-700 mt-1 leading-relaxed">
+                                        Calculated error counts or penalty multipliers exceed baseline drift parameters. This indicates the spreadsheet revision introduces new employee spelling variances, data-truncations, or missing structural headers. Complete localized training in the executive audit tab to resolve errors.
+                                      </p>
+                                    </div>
+                                  </div>
+                                </div>
+                              ) : (
+                                <div className="space-y-4">
+                                  <div className="p-4 bg-emerald-50 border border-emerald-200 rounded-lg flex gap-3 text-emerald-950">
+                                    <CheckCircle className="w-5 h-5 text-emerald-600 flex-shrink-0 mt-0.5" />
+                                    <div>
+                                      <h5 className="font-bold text-xs text-emerald-950">Assessment Compliance Safe</h5>
+                                      <p className="text-xs text-emerald-700 mt-1 leading-relaxed">
+                                        Perfect! All calculated quality metrics on this worksheet match or outpace standard baseline reference values. No structural regressions, typos, or decimal transcription deviations were introduced.
+                                      </p>
+                                    </div>
+                                  </div>
+                                </div>
+                              )}
+
+                              {/* Backup operations */}
+                              <div className="pt-4 border-t border-slate-100 flex items-center justify-between">
+                                <span className="text-[10px] text-slate-400 font-mono">Reference token: DIFF_ENGINE_ACTIVE</span>
+                                <button
+                                  onClick={exportCurrentRunJSON}
+                                  className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-white rounded text-3xs font-semibold cursor-pointer transition uppercase font-mono tracking-wider shadow-xs"
+                                >
+                                  <Download className="w-3.5 h-3.5" /> Export Compliance Blueprint (.json)
+                                </button>
+                              </div>
+                            </div>
+
+                            {/* Standard limits column */}
+                            <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-xs space-y-4">
+                              <h4 className="text-xs font-bold uppercase tracking-widest font-mono text-slate-500 border-b border-slate-150 pb-2">Benchmark Limits</h4>
+                              <p className="text-xs text-slate-500 leading-relaxed font-sans">
+                                Continuous inspection ensures spreadsheets align to the following reference rules:
+                              </p>
+                              
+                              <ul className="space-y-2.5 text-xs font-sans">
+                                <li className="flex items-center justify-between p-2 bg-slate-50 rounded border border-slate-100">
+                                  <span className="font-mono text-[10px] text-slate-450 uppercase font-bold">Accuracy Buffer</span>
+                                  <span className="font-bold text-slate-705">±0.50% max dev</span>
+                                </li>
+                                <li className="flex items-center justify-between p-2 bg-slate-50 rounded border border-slate-100">
+                                  <span className="font-mono text-[10px] text-slate-450 uppercase font-bold">Structural shift limit</span>
+                                  <span className="font-bold text-slate-705">0 rows shift</span>
+                                </li>
+                                <li className="flex items-center justify-between p-2 bg-slate-50 rounded border border-slate-100 font-semibold">
+                                  <span className="font-mono text-[10px] text-slate-450 uppercase font-bold text-slate-400">Typograph check count</span>
+                                  <span className="font-bold text-slate-705 text-emerald-600 font-bold">Auto Active</span>
+                                </li>
+                              </ul>
+                            </div>
+
+                          </div>
+                        </div>
+                      );
+                    })()}
+
+                  </div>
+                )}
+              </motion.div>
+            )}
           </AnimatePresence>
         </main>
       )}
@@ -3105,6 +3901,291 @@ export default function App() {
           </p>
         </div>
       </footer>
+
+      {/* 🧾 Standalone certificate shown ONLY on actual hardcopy paper prints (invisible during standard screen previews) */}
+      {qaAnalysis && (
+        <>
+          <div className="hidden print:block p-10 bg-white max-w-4xl mx-auto space-y-8 font-sans">
+            <div className="flex justify-between items-center border-b pb-6">
+              <div>
+                <h1 className="text-2xl font-black text-slate-900 tracking-tight">Enterprise Compliance Certificate</h1>
+                <p className="text-xs text-slate-550 mt-1">Ground Truth Spreadsheet Quality Alignment Service</p>
+              </div>
+              <div className="text-right text-xs text-slate-400 font-mono space-y-1">
+                <div>Document Ref: QA-PRINT-AUTHENTICATED</div>
+                <div>Evaluated Worker: {config.employeeName || "Farid Al-Mansour"}</div>
+                <div>Project Preset: {config.projectName || "Standard Audit"}</div>
+                <div>Assessment Date: {config.evaluationDate}</div>
+              </div>
+            </div>
+
+            <div className="bg-purple-50/50 border border-purple-100 rounded-xl p-6 flex justify-between items-center text-slate-900">
+              <div>
+                <span className="text-[10px] uppercase font-bold text-indigo-700 tracking-widest font-mono block">Final Quality Precedence Grade</span>
+                <h2 className="text-lg font-black text-slate-900 mt-1">PERFORMANCE GRADE: {qaAnalysis.metrics.grade || "C"}</h2>
+                <p className="text-xs text-slate-500 mt-2 max-w-lg leading-relaxed">
+                  This certificate is mathematically authenticated to seal the quality metrics evaluated on files compared side-by-side with ground truth.
+                </p>
+              </div>
+              <div className="bg-indigo-600 text-white rounded-lg p-5 text-center min-w-[120px] font-mono shadow-sm">
+                <span className="text-[10px] block font-bold text-indigo-150 uppercase tracking-widest">Score Ratio</span>
+                <span className="text-2xl font-black">{qaAnalysis.metrics.accuracyRatio.toFixed(2)}%</span>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-4 gap-4">
+              <div className="border border-slate-200 rounded-lg p-4 bg-slate-50/20">
+                <span className="text-[10px] font-mono text-slate-400 block font-bold uppercase">Accuracy</span>
+                <p className="text-lg font-bold text-slate-800 mt-1">{qaAnalysis.metrics.accuracyRatio.toFixed(2)}%</p>
+              </div>
+              <div className="border border-slate-200 rounded-lg p-4 bg-slate-50/20">
+                <span className="text-[10px] font-mono text-slate-400 block font-bold uppercase">Worksheets Compared</span>
+                <p className="text-lg font-bold text-slate-800 mt-1">{qaAnalysis.sheetMatches?.length || 0}</p>
+              </div>
+              <div className="border border-slate-200 rounded-lg p-4 bg-slate-50/20">
+                <span className="text-[10px] font-mono text-slate-400 block font-bold uppercase">Data Errors</span>
+                <p className="text-lg font-bold text-slate-800 mt-1">{qaAnalysis.errorLog.length} errors</p>
+              </div>
+              <div className="border border-slate-200 rounded-lg p-4 bg-slate-50/20">
+                <span className="text-[10px] font-mono text-slate-400 block font-bold uppercase">Penalty Points</span>
+                <p className="text-lg font-bold text-slate-800 mt-1">{qaAnalysis.metrics.totalStructuralPenalty || 0} pts</p>
+              </div>
+            </div>
+
+            <div className="space-y-4">
+              <span className="text-xs font-bold uppercase tracking-widest font-mono text-slate-500 block border-b pb-2">Top Logged Transcription Errors</span>
+              {qaAnalysis.errorLog.length === 0 ? (
+                <p className="text-xs text-slate-400 italic">No errors logged during this assessment cycle.</p>
+              ) : (
+                qaAnalysis.errorLog.slice(0, 15).map((e: any, idx: number) => (
+                  <div key={idx} className="border border-slate-100 rounded bg-slate-50/30 p-3 text-xs flex justify-between items-center">
+                    <div>
+                      <span className="font-bold text-slate-800">Sheet: {e.sheet} | Cell: {e.cell}</span> {e.errorType}
+                      <div className="text-slate-500 mt-1 text-[11px]">Given: "{e.employeeValue}" &bull; Replaced by target: "{e.reviewerValue}"</div>
+                    </div>
+                    <span className="font-mono text-rose-600 bg-rose-50 px-2 py-0.5 rounded border border-rose-100/60 font-semibold">- {e.penalty} pts</span>
+                  </div>
+                ))
+              )}
+            </div>
+
+            <div className="flex justify-between mt-20 pt-10 text-xs">
+              <div className="w-[200px] border-t border-slate-300 text-center pt-2 text-slate-550 font-semibold">
+                <div className="h-10"></div>
+                Reviewing Compliance Supervisor
+              </div>
+              <div className="w-[200px] border-t border-slate-300 text-center pt-2 text-slate-550 font-semibold">
+                <div className="h-10"></div>
+                Ground Truth Verification Officer
+              </div>
+              <div className="w-[200px] border-t border-slate-300 text-center pt-2 text-slate-550 font-semibold">
+                <div className="h-4 text-indigo-500 font-serif text-sm italic font-bold">Verified & Signed</div>
+                <div className="h-6"></div>
+                Audit Authentication Stamp
+              </div>
+            </div>
+          </div>
+
+          {/* Off-screen high fidelity container for PDF download generation (html2canvas) */}
+          <div
+            id="pdf-certificate-content"
+            style={{
+              position: "absolute",
+              left: "-9999px",
+              top: "-9999px",
+              width: "800px",
+              backgroundColor: "#ffffff",
+              padding: "40px",
+              boxSizing: "border-box",
+              fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif",
+              color: "#334155"
+            }}
+          >
+            {/* Header */}
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "2px solid #e2e8f0", paddingBottom: "24px", marginBottom: "32px" }}>
+              <div>
+                <h1 style={{ fontWeight: 900, fontSize: "24px", color: "#0f172a", margin: 0, letterSpacing: "-0.025em" }}>Enterprise Compliance Certificate</h1>
+                <p style={{ fontSize: "12px", color: "#64748b", margin: "4px 0 0 0" }}>Ground Truth Spreadsheet Quality Alignment Service</p>
+              </div>
+              <div style={{ textAlign: "right", fontSize: "11px", fontFamily: "monospace", color: "#64748b", lineHeight: "1.5" }}>
+                <div>Document Ref: QA-PRINT-AUTHENTICATED</div>
+                <div>Evaluated Worker: {config.employeeName || "Farid Al-Mansour"}</div>
+                <div>Project Preset: {config.projectName || "Standard Audit"}</div>
+                <div>Assessment Date: {config.evaluationDate}</div>
+              </div>
+            </div>
+
+            {/* Performance Grade Box */}
+            <div style={{ backgroundColor: "#faf5ff", border: "1px solid #f3e8ff", borderRadius: "12px", padding: "24px", display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "32px", boxSizing: "border-box" }}>
+              <div style={{ flex: 1, paddingRight: "24px" }}>
+                <span style={{ textTransform: "uppercase", fontWeight: "bold", fontSize: "10px", color: "#4f46e5", letterSpacing: "1px", display: "block" }}>Final Quality Precedence Grade</span>
+                <h2 style={{ fontWeight: 900, fontSize: "20px", color: "#0f172a", marginTop: "4px", marginBottom: "8px" }}>PERFORMANCE GRADE: {qaAnalysis.metrics.grade || "C"}</h2>
+                <p style={{ color: "#64748b", lineHeight: "1.5", fontSize: "12px", margin: 0 }}>
+                  This certificate is mathematically authenticated to seal the quality metrics evaluated on files compared side-by-side with ground truth.
+                </p>
+              </div>
+              <div style={{ backgroundColor: "#4f46e5", color: "#ffffff", borderRadius: "8px", padding: "16px 24px", textAlign: "center", minWidth: "120px", boxSizing: "border-box", flexShrink: 0 }}>
+                <span style={{ display: "block", fontSize: "10px", fontWeight: "bold", color: "#c7d2fe", textTransform: "uppercase", letterSpacing: "1px", marginBottom: "4px" }}>Score Ratio</span>
+                <span style={{ fontSize: "24px", fontWeight: 900, fontFamily: "monospace" }}>{qaAnalysis.metrics.accuracyRatio.toFixed(2)}%</span>
+              </div>
+            </div>
+
+            {/* Critical Quality KPIs */}
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "16px", marginBottom: "32px" }}>
+              <div style={{ border: "1px solid #cbd5e1", borderRadius: "8px", padding: "16px", backgroundColor: "#f8fafc" }}>
+                <span style={{ display: "block", fontSize: "10px", color: "#94a3b8", textTransform: "uppercase", fontWeight: "bold", fontFamily: "monospace" }}>Accuracy</span>
+                <p style={{ fontSize: "18px", fontWeight: "bold", color: "#1e293b", margin: "4px 0 0 0", fontFamily: "monospace" }}>{qaAnalysis.metrics.accuracyRatio.toFixed(2)}%</p>
+              </div>
+              <div style={{ border: "1px solid #cbd5e1", borderRadius: "8px", padding: "16px", backgroundColor: "#f8fafc" }}>
+                <span style={{ display: "block", fontSize: "10px", color: "#94a3b8", textTransform: "uppercase", fontWeight: "bold", fontFamily: "monospace" }}>Worksheets Compared</span>
+                <p style={{ fontSize: "18px", fontWeight: "bold", color: "#1e293b", margin: "4px 0 0 0", fontFamily: "monospace" }}>{qaAnalysis.sheetMatches?.length || 0}</p>
+              </div>
+              <div style={{ border: "1px solid #cbd5e1", borderRadius: "8px", padding: "16px", backgroundColor: "#f8fafc" }}>
+                <span style={{ display: "block", fontSize: "10px", color: "#94a3b8", textTransform: "uppercase", fontWeight: "bold", fontFamily: "monospace" }}>Data Errors</span>
+                <p style={{ fontSize: "18px", fontWeight: "bold", color: "#1e293b", margin: "4px 0 0 0", fontFamily: "monospace" }}>{qaAnalysis.errorLog.length} errors</p>
+              </div>
+              <div style={{ border: "1px solid #cbd5e1", borderRadius: "8px", padding: "16px", backgroundColor: "#f8fafc" }}>
+                <span style={{ display: "block", fontSize: "10px", color: "#94a3b8", textTransform: "uppercase", fontWeight: "bold", fontFamily: "monospace" }}>Penalty Points</span>
+                <p style={{ fontSize: "18px", fontWeight: "bold", color: "#1e293b", margin: "4px 0 0 0", fontFamily: "monospace" }}>{qaAnalysis.metrics.totalStructuralPenalty || 0} pts</p>
+              </div>
+            </div>
+
+            {/* Error logs */}
+            <div style={{ marginBottom: "32px" }}>
+              <span style={{ display: "block", fontSize: "12px", fontWeight: "bold", color: "#64748b", textTransform: "uppercase", borderBottom: "1px solid #cbd5e1", paddingBottom: "8px", marginBottom: "16px", fontFamily: "monospace", letterSpacing: "1px" }}>Top Logged Transcription Errors</span>
+              {qaAnalysis.errorLog.length === 0 ? (
+                <p style={{ fontSize: "12px", color: "#94a3b8", fontStyle: "italic", margin: 0 }}>No errors logged during this assessment cycle.</p>
+              ) : (
+                <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                  {qaAnalysis.errorLog.slice(0, 15).map((e: any, idx: number) => (
+                    <div key={idx} style={{ border: "1px solid #e2e8f0", borderRadius: "6px", backgroundColor: "#f8fafc", padding: "12px", display: "flex", justifyContent: "space-between", alignItems: "center", boxSizing: "border-box" }}>
+                      <div style={{ flex: 1, paddingRight: "16px" }}>
+                        <span style={{ fontWeight: "bold", color: "#334155", fontSize: "12px" }}>Sheet: {e.sheet} | Cell: {e.cell}</span> <span style={{ fontSize: "12px", color: "#64748b" }}>- {e.errorType}</span>
+                        <div style={{ color: "#64748b", fontSize: "11px", marginTop: "4px" }}>Given: "{e.employeeValue}" &bull; Replaced by target: "{e.reviewerValue}"</div>
+                      </div>
+                      <span style={{ color: "#e11d48", backgroundColor: "#fff1f2", border: "1px solid #fecdd3", padding: "2px 8px", borderRadius: "4px", fontSize: "11px", fontFamily: "monospace", fontWeight: "bold", flexShrink: 0, display: "inline-block" }}>- {e.penalty} pts</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Signatures */}
+            <div style={{ display: "flex", justifyContent: "space-between", marginTop: "80px", borderTop: "1px solid #cbd5e1", paddingTop: "20px" }}>
+              <div style={{ width: "200px", textAlign: "center", fontSize: "12px", color: "#475569", fontWeight: "600" }}>
+                <div style={{ height: "40px" }}></div>
+                Reviewing Compliance Supervisor
+              </div>
+              <div style={{ width: "200px", textAlign: "center", fontSize: "12px", color: "#475569", fontWeight: "600" }}>
+                <div style={{ height: "40px" }}></div>
+                Ground Truth Verification Officer
+              </div>
+              <div style={{ width: "200px", textAlign: "center", fontSize: "12px", color: "#475569", fontWeight: "600" }}>
+                <div style={{ color: "#4f46e5", fontStyle: "italic", fontWeight: "bold", fontSize: "14px", height: "16px", marginBottom: "24px" }}>Verified & Signed</div>
+                Audit Authentication Stamp
+              </div>
+            </div>
+          </div>
+        </>
+      )}
+
+      {/* ⚠️ Beautiful custom Print Dialog for Sandboxed Frame Fallbacks */}
+      {showPrintModal && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-fade-in font-sans">
+          <div className="bg-white border border-slate-200 rounded-2xl w-full max-w-xl shadow-2xl overflow-hidden animate-scale-up">
+            
+            {/* Modal title header */}
+            <div className="p-6 bg-slate-50 border-b border-slate-150 flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 bg-indigo-50 rounded bg-indigo-100/60">
+                  <Printer className="w-5 h-5 text-indigo-600" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-slate-900 font-sans text-sm">Print Compliance Framework</h3>
+                  <p className="text-3xs text-slate-500 font-mono uppercase tracking-wider mt-0.5">Dual Sandbox Mitigation Protocol Active</p>
+                </div>
+              </div>
+              <button 
+                onClick={() => setShowPrintModal(false)}
+                className="w-7 h-7 flex items-center justify-center rounded-full bg-slate-100 hover:bg-slate-200 text-slate-500 hover:text-slate-700 cursor-pointer transition text-xs font-bold"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Modal Body */}
+            <div className="p-6 space-y-6">
+              
+              <div className="space-y-1">
+                <span className="text-[9px] font-bold text-indigo-600 font-mono bg-indigo-55 bg-indigo-50 px-2 py-0.5 rounded border border-indigo-100 uppercase">
+                  Sandbox Active Frame Notice
+                </span>
+                <p className="text-xs text-slate-600 leading-relaxed font-sans mt-2">
+                  Direct browser printing triggers are limited inside secure embedded iframe environments. To ensure your digital record is legally certified, please choose from the options below:
+                </p>
+              </div>
+
+              {/* Option 2 Card */}
+              <div className="border border-indigo-100 bg-indigo-50/25 p-5 rounded-xl space-y-3 transition hover:bg-indigo-50/50">
+                <div className="flex items-center gap-2">
+                  <span className="w-5 h-5 rounded-full bg-indigo-600 text-white font-mono text-[10px] flex items-center justify-center font-bold">1</span>
+                  <h4 className="text-xs font-bold text-slate-800 font-sans">Download Certified compliance Report as offline PDF</h4>
+                </div>
+                <p className="text-xs text-slate-550 leading-relaxed pl-7">
+                  Click below to immediately compile, render, and download a multi-page PDF document conforming to quality and alignment review standards.
+                </p>
+                <div className="pl-7 pt-2">
+                  <button
+                    onClick={generatePDFCertificate}
+                    className="inline-flex items-center gap-1.5 px-4 py-2 bg-indigo-650 hover:bg-indigo-700 text-white text-[10px] font-semibold uppercase tracking-wider font-mono rounded cursor-pointer transition shadow-xs"
+                  >
+                    <Download className="w-3.5 h-3.5" /> Generate printable PDF Document (.pdf)
+                  </button>
+                </div>
+              </div>
+
+              {/* Option 1 Card */}
+              <div className="border border-slate-200 bg-slate-50/50 p-5 rounded-xl space-y-3 hover:bg-slate-50 transition">
+                <div className="flex items-center gap-2">
+                  <span className="w-5 h-5 rounded-full bg-slate-600 text-white font-mono text-[10px] flex items-center justify-center font-bold">2</span>
+                  <h4 className="text-xs font-bold text-slate-800 pr-2">Launch Workspace app in clean tab</h4>
+                </div>
+                <p className="text-xs text-slate-500 leading-relaxed pl-7">
+                  Copy this sandbox address and paste it inside your browser address bar. Your browser will run the portal natively, resolving all iframe print issues:
+                </p>
+                <div className="pl-7 space-y-2">
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      readOnly
+                      value={window.location.href}
+                      className="flex-1 bg-white border border-slate-200 px-3 py-1.5 rounded text-3xs font-mono text-slate-500 outline-none select-all"
+                    />
+                    <button
+                      onClick={copySandboxUrlToClipboard}
+                      className="px-3.5 py-1.5 bg-slate-850 hover:bg-slate-800 text-white text-3xs font-semibold uppercase font-mono tracking-wider rounded cursor-pointer transition whitespace-nowrap min-w-[90px] text-center"
+                    >
+                      {copiedUrl ? "Copied!" : "Copy Link"}
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+            </div>
+
+            {/* Modal Footer */}
+            <div className="px-6 py-4 bg-slate-50 border-t border-slate-150 flex justify-end gap-2.5">
+              <button
+                onClick={() => setShowPrintModal(false)}
+                className="px-4 py-2 bg-slate-200 hover:bg-slate-300 text-slate-705 text-3xs font-bold uppercase tracking-wider font-mono rounded cursor-pointer transition"
+              >
+                Dismiss Modal
+              </button>
+            </div>
+
+          </div>
+        </div>
+      )}
 
     </div>
   );

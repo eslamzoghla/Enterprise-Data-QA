@@ -76,13 +76,17 @@ export interface QAConfig {
   numericDifferenceCoefficient: number;
   textDifferenceCoefficient: number;
   emptyCellDifferenceCoefficient: number;
+
+  // Auto Ignore rules
+  autoIgnoreEnabled: boolean;
+  customIgnorePatterns: string;
 }
 
 export interface CellValue {
   raw: any;
   formatted: string;
   normalized: string;
-  type: "string" | "number" | "boolean" | "date" | "empty";
+  type: "string" | "number" | "boolean" | "date" | "time" | "empty";
 }
 
 export interface VirtualSegment {
@@ -160,6 +164,11 @@ export interface QAMetrics {
   numericDifferencesCount: number;
   textDifferencesCount: number;
   emptyCellDifferencesCount: number;
+
+  // Compatibility and supplementary fields for panels/certificates
+  accuracyRatio?: number;
+  totalStructuralPenalty?: number;
+  grade?: string;
 }
 
 export interface RootCauseStats {
@@ -179,6 +188,29 @@ export interface PatternFindings {
   shiftEvents: ShiftEvent[];
 }
 
+export interface SheetMatch {
+  reviewerSheetName: string;
+  matchedEmployeeSheets: string[];
+  matchType: "Direct Match" | "Split Match" | "Merge Match" | "Fuzzy Match";
+  matchConfidence: number;
+  factors: {
+    nameSimilarity: number;
+    headerSimilarity: number;
+    structuralSimilarity: number;
+    dataOverlap: number;
+  };
+}
+
+export interface RootCauseCluster {
+  id: string;
+  type: "row_shift" | "column_shift" | "copy_paste" | "value_substitution" | "structural_mismatch" | "empty_cell_dense" | "general";
+  title: string;
+  description: string;
+  sheetName: string;
+  symptomCount: number;
+  severity: "Critical" | "High" | "Medium" | "Low";
+}
+
 export interface AnalysisResult {
   config: QAConfig;
   metrics: QAMetrics;
@@ -188,6 +220,8 @@ export interface AnalysisResult {
   coachingRecommendations: string[];
   summarizedAIReview?: string; // Optional field populated by Gemini server-side route
   virtualSheets?: Record<string, SheetGrid>;
+  sheetMatches?: SheetMatch[];
+  rootCauseClusters?: RootCauseCluster[];
 }
 
 export interface TableMergeSplitResult {
