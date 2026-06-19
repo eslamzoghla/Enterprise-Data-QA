@@ -19,6 +19,12 @@ export enum ErrorType {
   TableMerge = "Table Merge",
   TableSplit = "Table Split",
 
+  // New Structuring Categories
+  ExtraTable = "Extra Table",
+  MissingTable = "Missing Table",
+  ExtraColumns = "Extra Columns",
+  MissingColumns = "Missing Columns",
+
   // Numeric Errors
   MissingDigit = "Missing Digit",
   ExtraDigit = "Extra Digit",
@@ -59,6 +65,17 @@ export interface QAConfig {
   shiftConfidenceScore: boolean;
   headerPenalty: number; // e.g., 3
   strictMode: "AUTO" | "ON" | "OFF";
+
+  // New Penalty Coefficients
+  extraTableCoefficient: number;
+  missingTableCoefficient: number;
+  extraColumnCoefficient: number;
+  missingColumnCoefficient: number;
+  extraRowCoefficient: number;
+  missingRowCoefficient: number;
+  numericDifferenceCoefficient: number;
+  textDifferenceCoefficient: number;
+  emptyCellDifferenceCoefficient: number;
 }
 
 export interface CellValue {
@@ -124,6 +141,25 @@ export interface QAMetrics {
   errorRatePer10k: number;
   reviewerWorkloadIndex: number; // correction burden metric
   finalGrade: string;
+
+  // New Audit Scoring fields
+  structuralPenalty: number;
+  dataPenalty: number;
+  totalPenalty: number;
+  structuralScore: number;
+  dataScore: number;
+  finalAuditScore: number;
+
+  // Audit Category Counts and contributions
+  extraTablesCount: number;
+  missingTablesCount: number;
+  extraColumnsCount: number;
+  missingColumnsCount: number;
+  extraRowsCount: number;
+  missingRowsCount: number;
+  numericDifferencesCount: number;
+  textDifferencesCount: number;
+  emptyCellDifferencesCount: number;
 }
 
 export interface RootCauseStats {

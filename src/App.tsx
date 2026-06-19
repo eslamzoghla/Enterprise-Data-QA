@@ -130,7 +130,16 @@ export default function App() {
     numericToleranceMode: "PERCENTAGE",
     shiftConfidenceScore: true,
     headerPenalty: 3,
-    strictMode: "AUTO"
+    strictMode: "AUTO",
+    extraTableCoefficient: 50,
+    missingTableCoefficient: 100,
+    extraColumnCoefficient: 5,
+    missingColumnCoefficient: 10,
+    extraRowCoefficient: 1,
+    missingRowCoefficient: 2,
+    numericDifferenceCoefficient: 0.1,
+    textDifferenceCoefficient: 0.1,
+    emptyCellDifferenceCoefficient: 0.05
   });
 
   // Upload/Data state
@@ -352,7 +361,16 @@ export default function App() {
     config.numericToleranceMode,
     config.shiftConfidenceScore,
     config.headerPenalty,
-    config.strictMode
+    config.strictMode,
+    config.extraTableCoefficient,
+    config.missingTableCoefficient,
+    config.extraColumnCoefficient,
+    config.missingColumnCoefficient,
+    config.extraRowCoefficient,
+    config.missingRowCoefficient,
+    config.numericDifferenceCoefficient,
+    config.textDifferenceCoefficient,
+    config.emptyCellDifferenceCoefficient
   ]);
 
   // Fast O(1) error rendering lookup map for currently selected sheet
@@ -1277,6 +1295,125 @@ export default function App() {
                 <span className="text-[9px] text-slate-400 block mt-0.5 font-mono uppercase tracking-wider">Penalizes label inaccuracies (Default: 3)</span>
               </div>
             </div>
+
+            <div className="mt-6 border-t border-slate-200 pt-5 pr-1 pl-1">
+              <div className="flex items-center gap-2 mb-4">
+                <SlidersHorizontal className="w-4 h-4 text-emerald-600" />
+                <h4 className="font-bold text-xs uppercase tracking-wider font-mono text-slate-700">Audit Score Penalty Weight Coefficients</h4>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-3 gap-4 text-xs">
+                {/* Extra Table Coefficient */}
+                <div className="bg-slate-50/50 p-3 rounded-lg border border-slate-100">
+                  <label className="block text-slate-700 font-bold mb-1">Extra Table Coefficient</label>
+                  <input
+                    type="number"
+                    value={config.extraTableCoefficient}
+                    onChange={(e) => setConfig({ ...config, extraTableCoefficient: parseFloat(e.target.value) || 0 })}
+                    className="w-full px-3 py-1.5 border border-slate-200 bg-white rounded-md focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition duration-150"
+                  />
+                  <span className="text-[9px] text-slate-400 block mt-1">Defect penalty (Default: 50)</span>
+                </div>
+
+                {/* Missing Table Coefficient */}
+                <div className="bg-slate-50/50 p-3 rounded-lg border border-slate-100">
+                  <label className="block text-slate-700 font-bold mb-1">Missing Table Coefficient</label>
+                  <input
+                    type="number"
+                    value={config.missingTableCoefficient}
+                    onChange={(e) => setConfig({ ...config, missingTableCoefficient: parseFloat(e.target.value) || 0 })}
+                    className="w-full px-3 py-1.5 border border-slate-200 bg-white rounded-md focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition duration-150"
+                  />
+                  <span className="text-[9px] text-slate-400 block mt-1">Omission penalty (Default: 100)</span>
+                </div>
+
+                {/* Extra Column Coefficient */}
+                <div className="bg-slate-50/50 p-3 rounded-lg border border-slate-100">
+                  <label className="block text-slate-700 font-bold mb-1">Extra Column Coefficient</label>
+                  <input
+                    type="number"
+                    value={config.extraColumnCoefficient}
+                    onChange={(e) => setConfig({ ...config, extraColumnCoefficient: parseFloat(e.target.value) || 0 })}
+                    className="w-full px-3 py-1.5 border border-slate-200 bg-white rounded-md focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition duration-150"
+                  />
+                  <span className="text-[9px] text-slate-400 block mt-1">Defect penalty (Default: 5)</span>
+                </div>
+
+                {/* Missing Column Coefficient */}
+                <div className="bg-slate-50/50 p-3 rounded-lg border border-slate-100">
+                  <label className="block text-slate-700 font-bold mb-1">Missing Column Coefficient</label>
+                  <input
+                    type="number"
+                    value={config.missingColumnCoefficient}
+                    onChange={(e) => setConfig({ ...config, missingColumnCoefficient: parseFloat(e.target.value) || 0 })}
+                    className="w-full px-3 py-1.5 border border-slate-200 bg-white rounded-md focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition duration-150"
+                  />
+                  <span className="text-[9px] text-slate-400 block mt-1">Omission penalty (Default: 10)</span>
+                </div>
+
+                {/* Extra Row Coefficient */}
+                <div className="bg-slate-50/50 p-3 rounded-lg border border-slate-100">
+                  <label className="block text-slate-700 font-bold mb-1">Extra Row Coefficient</label>
+                  <input
+                    type="number"
+                    value={config.extraRowCoefficient}
+                    onChange={(e) => setConfig({ ...config, extraRowCoefficient: parseFloat(e.target.value) || 0 })}
+                    className="w-full px-3 py-1.5 border border-slate-200 bg-white rounded-md focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition duration-150"
+                  />
+                  <span className="text-[9px] text-slate-400 block mt-1">Defect penalty (Default: 1)</span>
+                </div>
+
+                {/* Missing Row Coefficient */}
+                <div className="bg-slate-50/50 p-3 rounded-lg border border-slate-100">
+                  <label className="block text-slate-700 font-bold mb-1">Missing Row Coefficient</label>
+                  <input
+                    type="number"
+                    value={config.missingRowCoefficient}
+                    onChange={(e) => setConfig({ ...config, missingRowCoefficient: parseFloat(e.target.value) || 0 })}
+                    className="w-full px-3 py-1.5 border border-slate-200 bg-white rounded-md focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition duration-150"
+                  />
+                  <span className="text-[9px] text-slate-400 block mt-1">Omission penalty (Default: 2)</span>
+                </div>
+
+                {/* Numeric Difference Coefficient */}
+                <div className="bg-slate-50/50 p-3 rounded-lg border border-slate-100">
+                  <label className="block text-slate-700 font-bold mb-1">Numeric Difference Coeff.</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={config.numericDifferenceCoefficient}
+                    onChange={(e) => setConfig({ ...config, numericDifferenceCoefficient: parseFloat(e.target.value) || 0 })}
+                    className="w-full px-3 py-1.5 border border-slate-200 bg-white rounded-md focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition duration-150"
+                  />
+                  <span className="text-[9px] text-slate-400 block mt-1">Data divergence (Default: 0.1)</span>
+                </div>
+
+                {/* Text Difference Coefficient */}
+                <div className="bg-slate-50/50 p-3 rounded-lg border border-slate-100">
+                  <label className="block text-slate-700 font-bold mb-1">Text Difference Coeff.</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={config.textDifferenceCoefficient}
+                    onChange={(e) => setConfig({ ...config, textDifferenceCoefficient: parseFloat(e.target.value) || 0 })}
+                    className="w-full px-3 py-1.5 border border-slate-200 bg-white rounded-md focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition duration-150"
+                  />
+                  <span className="text-[9px] text-slate-400 block mt-1">Data spelling (Default: 0.1)</span>
+                </div>
+
+                {/* Empty Cell Difference Coefficient */}
+                <div className="bg-slate-50/50 p-3 rounded-lg border border-slate-100 sm:col-span-2 lg:col-span-3">
+                  <label className="block text-slate-700 font-bold mb-1">Empty Cell Difference Coefficient</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={config.emptyCellDifferenceCoefficient}
+                    onChange={(e) => setConfig({ ...config, emptyCellDifferenceCoefficient: parseFloat(e.target.value) || 0 })}
+                    className="w-full px-3 py-1.5 border border-slate-200 bg-white rounded-md focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition duration-150"
+                  />
+                  <span className="text-[9px] text-slate-400 block mt-1">Data omission (Default: 0.05)</span>
+                </div>
+              </div>
+            </div>
             
             <div className="mt-8 pt-4 border-t border-slate-100 flex items-center justify-center">
               <button
@@ -1502,6 +1639,262 @@ export default function App() {
                    </div>
 
                  </div>
+
+                  {/* Unified Audit Score & Enterprise Penalties Section */}
+                  <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                    {/* Scores Bento Column */}
+                    <div className="lg:col-span-1 space-y-6 flex flex-col">
+                      <div className="bg-slate-900 text-white rounded-xl p-6 border border-slate-950 flex-1 flex flex-col justify-between shadow-md">
+                        <div>
+                          <span className="text-[10px] font-mono uppercase font-bold tracking-widest text-[#00E5FF]/80">
+                            Enterprise QA Score
+                          </span>
+                          <h3 className="text-2xl font-black tracking-tight text-white mt-1">
+                            Weighted Audit
+                          </h3>
+                        </div>
+                        
+                        <div className="my-6 flex flex-col items-center">
+                          <div className="text-6xl font-mono font-black text-[#00E5FF] tracking-tighter">
+                            {qaAnalysis.metrics.finalAuditScore.toFixed(1)}%
+                          </div>
+                          <span className="text-[10px] tracking-wider uppercase text-slate-400 mt-2 font-semibold font-mono">
+                            (40% STRUCTURAL + 60% DATA)
+                          </span>
+                        </div>
+
+                        <div className="space-y-4 border-t border-slate-800 pt-4">
+                          {/* Structural Score Item */}
+                          <div>
+                            <div className="flex justify-between items-center text-xs font-semibold text-slate-350">
+                              <span>Structural Quality Score</span>
+                              <span className="font-mono text-white">{qaAnalysis.metrics.structuralScore.toFixed(1)} / 100</span>
+                            </div>
+                            <div className="w-full bg-slate-800 h-1.5 rounded-full mt-1.5">
+                              <div 
+                                className="bg-[#00E5FF] h-1.5 rounded-full transition-all duration-500" 
+                                style={{ width: `${qaAnalysis.metrics.structuralScore}%` }}
+                              />
+                            </div>
+                          </div>
+
+                          {/* Data Score Item */}
+                          <div>
+                            <div className="flex justify-between items-center text-xs font-semibold text-slate-355">
+                              <span>Data Integrity Score</span>
+                              <span className="font-mono text-white">{qaAnalysis.metrics.dataScore.toFixed(1)} / 100</span>
+                            </div>
+                            <div className="w-full bg-slate-800 h-1.5 rounded-full mt-1.5">
+                              <div 
+                                className="bg-emerald-400 h-1.5 rounded-full transition-all duration-500" 
+                                style={{ width: `${qaAnalysis.metrics.dataScore}%` }}
+                              />
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Audit Summary Details Bento Column */}
+                    <div className="lg:col-span-2 bg-white border border-slate-200 rounded-xl p-6 shadow-sm flex flex-col justify-between">
+                      <div>
+                        <div className="flex items-center gap-2 mb-4 border-b border-slate-100 pb-3 font-mono">
+                          <SlidersHorizontal className="w-4 h-4 text-indigo-500" />
+                          <h3 className="font-bold text-xs uppercase tracking-wider text-slate-800">
+                            Enterprise Audit Score Penalty Breakdown
+                          </h3>
+                        </div>
+
+                        <div className="overflow-x-auto">
+                          <table className="w-full text-left border-collapse text-xs">
+                            <thead>
+                              <tr className="border-b border-slate-200 bg-slate-50/50 text-slate-500 font-mono text-[10px] uppercase">
+                                <th className="py-2.5 px-3 font-semibold">Quality Dimension / Defect Category</th>
+                                <th className="py-2.5 px-3 font-semibold text-center">Identified Count</th>
+                                <th className="py-2.5 px-3 font-semibold text-center">Coefficient (Weight)</th>
+                                <th className="py-2.5 px-3 font-semibold text-right">Penalty Contribution</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-150">
+                              {/* Extra Tables Row */}
+                              <tr className="hover:bg-slate-50/50">
+                                <td className="py-2 px-3 font-medium text-slate-805">
+                                  Extra Tables
+                                  <span className="block text-[10px] font-normal text-slate-400">Worker workbook contains extraneous tables</span>
+                                </td>
+                                <td className="py-2 px-3 text-center font-mono font-bold text-slate-707">
+                                  {qaAnalysis.metrics.extraTablesCount}
+                                </td>
+                                <td className="py-2 px-3 text-center font-mono text-slate-505">
+                                  {config.extraTableCoefficient}
+                                </td>
+                                <td className="py-2 px-3 text-right font-mono font-bold text-rose-600">
+                                  -{(qaAnalysis.metrics.extraTablesCount * config.extraTableCoefficient).toFixed(2)}
+                                </td>
+                              </tr>
+
+                              {/* Missing Tables Row */}
+                              <tr className="hover:bg-slate-50/50">
+                                <td className="py-2 px-3 font-medium text-slate-805">
+                                  Missing Tables
+                                  <span className="block text-[10px] font-normal text-slate-400">Ground truth tables completely omitted in worker file</span>
+                                </td>
+                                <td className="py-2 px-3 text-center font-mono font-bold text-slate-707">
+                                  {qaAnalysis.metrics.missingTablesCount}
+                                </td>
+                                <td className="py-2 px-3 text-center font-mono text-slate-555">
+                                  {config.missingTableCoefficient}
+                                </td>
+                                <td className="py-2 px-3 text-right font-mono font-bold text-rose-600">
+                                  -{(qaAnalysis.metrics.missingTablesCount * config.missingTableCoefficient).toFixed(2)}
+                                </td>
+                              </tr>
+
+                              {/* Extra Columns Row */}
+                              <tr className="hover:bg-slate-50/50">
+                                <td className="py-2 px-3 font-medium text-slate-805">
+                                  Extra Columns
+                                  <span className="block text-[10px] font-normal text-slate-400">Additional layout columns present in worker survey grid</span>
+                                </td>
+                                <td className="py-2 px-3 text-center font-mono font-bold text-slate-707">
+                                  {qaAnalysis.metrics.extraColumnsCount}
+                                </td>
+                                <td className="py-2 px-3 text-center font-mono text-slate-555">
+                                  {config.extraColumnCoefficient}
+                                </td>
+                                <td className="py-2 px-3 text-right font-mono font-bold text-rose-600">
+                                  -{(qaAnalysis.metrics.extraColumnsCount * config.extraColumnCoefficient).toFixed(2)}
+                                </td>
+                              </tr>
+
+                              {/* Missing Columns Row */}
+                              <tr className="hover:bg-slate-50/50">
+                                <td className="py-2 px-3 font-medium text-slate-805">
+                                  Missing Columns
+                                  <span className="block text-[10px] font-normal text-slate-400">Required survey columns omitted by worker</span>
+                                </td>
+                                <td className="py-2 px-3 text-center font-mono font-bold text-slate-707">
+                                  {qaAnalysis.metrics.missingColumnsCount}
+                                </td>
+                                <td className="py-2 px-3 text-center font-mono text-slate-555">
+                                  {config.missingColumnCoefficient}
+                                </td>
+                                <td className="py-2 px-3 text-right font-mono font-bold text-rose-600">
+                                  -{(qaAnalysis.metrics.missingColumnsCount * config.missingColumnCoefficient).toFixed(2)}
+                                </td>
+                              </tr>
+
+                              {/* Extra Rows Row */}
+                              <tr className="hover:bg-slate-50/50">
+                                <td className="py-2 px-3 font-medium text-slate-805">
+                                  Extra Rows
+                                  <span className="block text-[10px] font-normal text-slate-400">Extraneous records inserted into the grid</span>
+                                </td>
+                                <td className="py-2 px-3 text-center font-mono font-bold text-slate-707">
+                                  {qaAnalysis.metrics.extraRowsCount}
+                                </td>
+                                <td className="py-2 px-3 text-center font-mono text-slate-555">
+                                  {config.extraRowCoefficient}
+                                </td>
+                                <td className="py-2 px-3 text-right font-mono font-bold text-rose-600">
+                                  -{(qaAnalysis.metrics.extraRowsCount * config.extraRowCoefficient).toFixed(2)}
+                                </td>
+                              </tr>
+
+                              {/* Missing Rows Row */}
+                              <tr className="hover:bg-slate-50/50">
+                                <td className="py-2 px-3 font-medium text-slate-805">
+                                  Missing Rows
+                                  <span className="block text-[10px] font-normal text-slate-400">Mandatory data rows totally omitted inside grid</span>
+                                </td>
+                                <td className="py-2 px-3 text-center font-mono font-bold text-slate-707">
+                                  {qaAnalysis.metrics.missingRowsCount}
+                                </td>
+                                <td className="py-2 px-3 text-center font-mono text-slate-555">
+                                  {config.missingRowCoefficient}
+                                </td>
+                                <td className="py-2 px-3 text-right font-mono font-bold text-rose-600">
+                                  -{(qaAnalysis.metrics.missingRowsCount * config.missingRowCoefficient).toFixed(2)}
+                                </td>
+                              </tr>
+
+                              {/* Numeric Differences Row */}
+                              <tr className="hover:bg-slate-50/50">
+                                <td className="py-2 px-3 font-medium text-slate-855">
+                                  Numeric Differences
+                                  <span className="block text-[10px] font-normal text-slate-400">Value or arithmetic divergences</span>
+                                </td>
+                                <td className="py-2 px-3 text-center font-mono font-bold text-slate-707">
+                                  {qaAnalysis.metrics.numericDifferencesCount}
+                                </td>
+                                <td className="py-2 px-3 text-center font-mono text-slate-555">
+                                  {config.numericDifferenceCoefficient}
+                                </td>
+                                <td className="py-2 px-3 text-right font-mono font-bold text-rose-600">
+                                  -{(qaAnalysis.metrics.numericDifferencesCount * config.numericDifferenceCoefficient).toFixed(2)}
+                                </td>
+                              </tr>
+
+                              {/* Text Differences Row */}
+                              <tr className="hover:bg-slate-50/50">
+                                <td className="py-2 px-3 font-medium text-slate-855">
+                                  Text Differences
+                                  <span className="block text-[10px] font-normal text-slate-400">Spelling variations or major descriptive changes</span>
+                                </td>
+                                <td className="py-2 px-3 text-center font-mono font-bold text-slate-707">
+                                  {qaAnalysis.metrics.textDifferencesCount}
+                                </td>
+                                <td className="py-2 px-3 text-center font-mono text-slate-555">
+                                  {config.textDifferenceCoefficient}
+                                </td>
+                                <td className="py-2 px-3 text-right font-mono font-bold text-rose-600">
+                                  -{(qaAnalysis.metrics.textDifferencesCount * config.textDifferenceCoefficient).toFixed(2)}
+                                </td>
+                              </tr>
+
+                              {/* Empty Cell Differences Row */}
+                              <tr className="hover:bg-slate-50/50">
+                                <td className="py-2 px-3 font-medium text-slate-855">
+                                  Empty Cell Differences
+                                  <span className="block text-[10px] font-normal text-slate-400">Individual blank vs. populated cell differences</span>
+                                </td>
+                                <td className="py-2 px-3 text-center font-mono font-bold text-slate-707">
+                                  {qaAnalysis.metrics.emptyCellDifferencesCount}
+                                </td>
+                                <td className="py-2 px-3 text-center font-mono text-slate-555">
+                                  {config.emptyCellDifferenceCoefficient}
+                                </td>
+                                <td className="py-2 px-3 text-right font-mono font-bold text-rose-600">
+                                  -{(qaAnalysis.metrics.emptyCellDifferencesCount * config.emptyCellDifferenceCoefficient).toFixed(2)}
+                                </td>
+                              </tr>
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5 border-t border-slate-100 pt-4 mt-4 font-mono text-[10px] bg-slate-50 p-3 rounded-lg uppercase">
+                        <div>
+                          <span className="text-slate-400 font-bold block">Structural Penalty</span>
+                          <span className="text-slate-800 font-black text-xs text-rose-600">
+                            {qaAnalysis.metrics.structuralPenalty.toFixed(2)} pts
+                          </span>
+                        </div>
+                        <div>
+                          <span className="text-slate-400 font-bold block">Data Penalty</span>
+                          <span className="text-slate-800 font-black text-xs text-rose-600">
+                            {qaAnalysis.metrics.dataPenalty.toFixed(2)} pts
+                          </span>
+                        </div>
+                        <div className="col-span-2 sm:col-span-1 text-right">
+                          <span className="text-slate-400 font-bold block">Cumulative Penalty</span>
+                          <span className="text-indigo-600 font-black text-xs">
+                            {qaAnalysis.metrics.totalPenalty.toFixed(2)} pts
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                   {/* Left Column: Root Cause Analytics bar charts */}

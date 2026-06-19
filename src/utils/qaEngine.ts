@@ -1194,6 +1194,14 @@ export function executeQAEvaluation(
   let totalErrorsCount = 0;
   let penaltyPointsTotal = 0;
 
+  // New Audit Structural Counters
+  let extraTablesCount = 0;
+  let missingTablesCount = 0;
+  let extraColumnsCount = 0;
+  let missingColumnsCount = 0;
+  let extraRowsCount = 0;
+  let missingRowsCount = 0;
+
   // Determine standard Strict Mode
   const strictModeActive = isStrictModeActive(employeeData, config);
   const effectiveTolerance = strictModeActive ? 0.0 : config.numericTolerance;
@@ -1538,45 +1546,34 @@ export function executeQAEvaluation(
 
     // Missing sheet or extra sheet triggers full coordinate missing/extra values
     if (!empSheet || !revSheet) {
-      const activeSheet = empSheet || revSheet;
       const isEmployeeOnly = !!empSheet;
-      
-      for (const [coord, cell] of Object.entries(activeSheet.cells)) {
-        const [rStr, cStr] = coord.split(",");
-        const rIndex = parseInt(rStr);
-        const cIndex = parseInt(cStr);
-        const cellRef = `${getColLetter(cIndex)}${rIndex + 1}`;
-        
-        totalComparedCellsCount++;
-        totalErrorsCount++;
+      const penalty = isEmployeeOnly ? config.extraTableCoefficient : config.missingTableCoefficient;
+      const errType = isEmployeeOnly ? ErrorType.ExtraTable : ErrorType.MissingTable;
+      const notes = isEmployeeOnly
+        ? `Extra Table: Employee table '${sheetName}' has no legitimate counterpart in the Reviewer workbook.`
+        : `Missing Table: Reviewer table '${sheetName}' is omitted in the Employee workbook.`;
 
-        const errType = isEmployeeOnly ? ErrorType.ExtraValue : ErrorType.MissingValue;
-        const sev = Severity.High;
-        const penalty = 5;
-
-        if (errType === ErrorType.MissingValue) missingValuesCount++;
-        else extraValuesCount++;
-
-        penaltyPointsTotal += penalty;
-
-        errorLog.push({
-          sheet: sheetName,
-          cell: cellRef,
-          rowIndex: rIndex,
-          colIndex: cIndex,
-          employeeValue: isEmployeeOnly ? cell.formatted : "",
-          reviewerValue: isEmployeeOnly ? "" : cell.formatted,
-          normalizedEmployeeValue: isEmployeeOnly ? cell.normalized : "",
-          normalizedReviewerValue: isEmployeeOnly ? "" : cell.normalized,
-          similarity: 0,
-          errorType: errType,
-          severity: sev,
-          penalty,
-          notes: isEmployeeOnly 
-            ? `Extraneous cell present in worker submission but ground truth sheet '${sheetName}' is missing.`
-            : `Cell expected in ground truth sheet but entirely omitted by worker in sheet '${sheetName}'.`
-         });
+      if (isEmployeeOnly) {
+        extraTablesCount++;
+      } else {
+        missingTablesCount++;
       }
+
+      errorLog.push({
+        sheet: sheetName,
+        cell: "Sheet Layout",
+        rowIndex: 0,
+        colIndex: 0,
+        employeeValue: isEmployeeOnly ? sheetName : "",
+        normalizedEmployeeValue: isEmployeeOnly ? sheetName : "",
+        reviewerValue: isEmployeeOnly ? "" : sheetName,
+        normalizedReviewerValue: isEmployeeOnly ? "" : sheetName,
+        similarity: 0,
+        errorType: errType,
+        severity: Severity.High,
+        penalty,
+        notes
+      });
       continue;
     }
 
@@ -1824,6 +1821,56 @@ export function executeQAEvaluation(
             });
           }
         }
+      }
+    }
+
+    if (!isVirtualComparison) {
+      let NumberOfExtraColumns = 0;
+      let NumberOfMissingColumns = 0;
+      for (const colBlock of colStepBlocks) {
+        if (colBlock.type === "extra_column") {
+          NumberOfExtraColumns += colBlock.count;
+        } else if (colBlock.type === "missing_column") {
+          NumberOfMissingColumns += colBlock.count;
+        }
+      }
+
+      if (NumberOfExtraColumns > 0) {
+        extraColumnsCount += NumberOfExtraColumns;
+        errorLog.push({
+          sheet: sheetName,
+          cell: "Columns Layout",
+          rowIndex: 0,
+          colIndex: 0,
+          employeeValue: `${NumberOfExtraColumns} extra columns`,
+          reviewerValue: "",
+          normalizedEmployeeValue: `${NumberOfExtraColumns}`,
+          normalizedReviewerValue: "",
+          similarity: 0,
+          errorType: ErrorType.ExtraColumns,
+          severity: Severity.High,
+          penalty: NumberOfExtraColumns * config.extraColumnCoefficient,
+          notes: `Extra Columns: Table contains ${NumberOfExtraColumns} additional column(s) not present in Reviewer template.`
+        });
+      }
+
+      if (NumberOfMissingColumns > 0) {
+        missingColumnsCount += NumberOfMissingColumns;
+        errorLog.push({
+          sheet: sheetName,
+          cell: "Columns Layout",
+          rowIndex: 0,
+          colIndex: 0,
+          employeeValue: "",
+          reviewerValue: `${NumberOfMissingColumns} missing columns`,
+          normalizedEmployeeValue: "",
+          normalizedReviewerValue: `${NumberOfMissingColumns}`,
+          similarity: 0,
+          errorType: ErrorType.MissingColumns,
+          severity: Severity.High,
+          penalty: NumberOfMissingColumns * config.missingColumnCoefficient,
+          notes: `Missing Columns: Table is missing ${NumberOfMissingColumns} required column(s).`
+        });
       }
     }
 
@@ -2437,6 +2484,20 @@ export function executeQAEvaluation(
       }
     }
 
+    if (!isVirtualComparison) {
+      let NumberOfExtraRows = 0;
+      let NumberOfMissingRows = 0;
+      for (const block of stepBlocks) {
+        if (block.type === "extra_row") {
+          NumberOfExtraRows += block.count;
+        } else if (block.type === "missing_row") {
+          NumberOfMissingRows += block.count;
+        }
+      }
+      extraRowsCount += NumberOfExtraRows;
+      missingRowsCount += NumberOfMissingRows;
+    }
+
     sheetErrorDensities[sheetName] = totalErrorsCount;
   }
 
@@ -2501,6 +2562,66 @@ export function executeQAEvaluation(
     }
   }
 
+  // Compute Data Category differences from consolidated error log
+  let numericDifferencesCount = 0;
+  let textDifferencesCount = 0;
+  let emptyCellDifferencesCount = 0;
+
+  for (const err of consolidatedErrorLog) {
+    if (
+      err.errorType === ErrorType.ExtraTable ||
+      err.errorType === ErrorType.MissingTable ||
+      err.errorType === ErrorType.ExtraColumns ||
+      err.errorType === ErrorType.MissingColumns
+    ) {
+      continue;
+    }
+
+    switch (err.errorType) {
+      case ErrorType.MissingValue:
+      case ErrorType.ExtraValue:
+      case ErrorType.MissingCell:
+      case ErrorType.ExtraCell:
+        emptyCellDifferencesCount++;
+        break;
+      case ErrorType.MissingDigit:
+      case ErrorType.ExtraDigit:
+      case ErrorType.DigitSubstitution:
+      case ErrorType.DigitTransposition:
+      case ErrorType.NumericDifference:
+      case ErrorType.MajorNumericError:
+        numericDifferencesCount++;
+        break;
+      case ErrorType.TextDifference:
+      case ErrorType.TextTypo:
+      case ErrorType.MajorTextDifference:
+      case ErrorType.RangeInversionError:
+      case ErrorType.RangeBoundaryError:
+      case ErrorType.RangeRepresentationError:
+        textDifferencesCount++;
+        break;
+    }
+  }
+
+  const structuralPenalty = 
+    (extraTablesCount * config.extraTableCoefficient) +
+    (missingTablesCount * config.missingTableCoefficient) +
+    (extraColumnsCount * config.extraColumnCoefficient) +
+    (missingColumnsCount * config.missingColumnCoefficient) +
+    (extraRowsCount * config.extraRowCoefficient) +
+    (missingRowsCount * config.missingRowCoefficient);
+
+  const dataPenalty = 
+    (numericDifferencesCount * config.numericDifferenceCoefficient) +
+    (textDifferencesCount * config.textDifferenceCoefficient) +
+    (emptyCellDifferencesCount * config.emptyCellDifferenceCoefficient);
+
+  const totalPenalty = structuralPenalty + dataPenalty;
+
+  const structuralScore = Math.max(0, Math.min(100, 100 - structuralPenalty));
+  const dataScore = Math.max(0, Math.min(100, 100 - dataPenalty));
+  const finalAuditScore = (structuralScore * 0.40) + (dataScore * 0.60);
+
   // Compile final aggregated accuracy metrics including consolidation
   const comparedCells = totalComparedCellsCount;
   const totalErrors = consolidatedErrorLog.length;
@@ -2560,7 +2681,24 @@ export function executeQAEvaluation(
     weightedAccuracy,
     errorRatePer10k,
     reviewerWorkloadIndex,
-    finalGrade
+    finalGrade,
+
+    structuralPenalty,
+    dataPenalty,
+    totalPenalty,
+    structuralScore,
+    dataScore,
+    finalAuditScore,
+
+    extraTablesCount,
+    missingTablesCount,
+    extraColumnsCount,
+    missingColumnsCount,
+    extraRowsCount,
+    missingRowsCount,
+    numericDifferencesCount,
+    textDifferencesCount,
+    emptyCellDifferencesCount
   };
 
   // Compile standard Root Cause percentages partition
