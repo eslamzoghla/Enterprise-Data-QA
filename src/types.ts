@@ -153,3 +153,11 @@ export interface AnalysisResult {
   summarizedAIReview?: string; // Optional field populated by Gemini server-side route
   virtualSheets?: Record<string, SheetGrid>;
 }
+
+export interface TableMergeSplitResult {
+    detected: boolean;
+    employeeTables: string[];
+    reviewerTable: string;
+    similarity: number;
+    type: "MERGE" | "SPLIT";
+}
